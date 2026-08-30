@@ -1,0 +1,2 @@
+experiment_id,dataset,distribution_arg,distribution_label,total_budget,max_rounds,local_bs,lr,local_ep,seed,test_method,methods_paper,slurm_template,priority,notes
+TODO_cifar100_dirichlet_1p0_paired_ablation,cifar100,dirichlet:1.0,dirichlet:1.0,[TODO-METADATA],[TODO-METADATA],[TODO-METADATA],[TODO-METADATA],[TODO-METADATA],2024,[TODO-BASELINE],[TODO-BASELINE],[TODO-METADATA],todo,[TODO-RESULT] paired full-vs-ablation evidence is missing

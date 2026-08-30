@@ -8,6 +8,39 @@
 .pdf
 .json
 
+# Local paper/manuscript assets are intentionally not published here
+paper_assets/
+
+# IDE and agent-local metadata
+.vscode/
+AGENTS.md
+
+# Datasets, model caches, checkpoints, and downloaded packages
+cifar100_local/
+data_local/
+hf_cache/
+models_zoo/
+data/*.jsonl
+*.whl
+*.zip
+
+# Experiment outputs and runtime artifacts
+evaluation_results/
+eval_tensorboard_*/
+ppo_tensorboard*/
+logs/
+test_picture/
+layer_importance_metrics_comparison.png
+test_layer_*.out
+test_layer_*.err
+save/*.png
+save/*.zip
+
+# Machine-local helper files
+concerns.txt
+enable_proxy.sh*
+disable_proxy.sh*
+
 # macOS
 .DS_Store
 
