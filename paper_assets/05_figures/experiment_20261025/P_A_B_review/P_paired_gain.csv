@@ -1,0 +1,13 @@
+distribution,checkpoint,comparison,metric,n_seeds,n_client_cells,mean,std
+dirichlet:0.1,early,Local_minus_Local-Mean,paired_validation_loss_reduction_difference,3,15,-0.0006116682688395454,0.010329240889503651
+dirichlet:0.1,early,Local_minus_Server-Proxy,paired_validation_loss_reduction_difference,3,15,-0.005560392379760751,0.005512458146343568
+dirichlet:0.1,middle,Local_minus_Local-Mean,paired_validation_loss_reduction_difference,3,15,-0.0014216361045837752,0.0022702211116308415
+dirichlet:0.1,middle,Local_minus_Server-Proxy,paired_validation_loss_reduction_difference,3,15,0.0002508349418639533,0.001699044170168969
+dirichlet:1.0,early,Local_minus_Local-Mean,paired_validation_loss_reduction_difference,3,15,-0.00034024302164710935,0.000766657811696487
+dirichlet:1.0,early,Local_minus_Server-Proxy,paired_validation_loss_reduction_difference,3,15,-0.0004558486938475899,0.0009655704948660919
+dirichlet:1.0,middle,Local_minus_Local-Mean,paired_validation_loss_reduction_difference,3,15,-0.00018963209788012137,0.0018324604326734816
+dirichlet:1.0,middle,Local_minus_Server-Proxy,paired_validation_loss_reduction_difference,3,15,-0.0009957459767660087,0.0010073396876592341
+iid,early,Local_minus_Local-Mean,paired_validation_loss_reduction_difference,3,15,-0.00013852055867526287,0.00015686666393088016
+iid,early,Local_minus_Server-Proxy,paired_validation_loss_reduction_difference,3,15,-0.00013852055867526287,0.00015686666393088016
+iid,middle,Local_minus_Local-Mean,paired_validation_loss_reduction_difference,3,15,-0.0029522946675618537,0.001847048298158472
+iid,middle,Local_minus_Server-Proxy,paired_validation_loss_reduction_difference,3,15,-0.00200718752543129,0.000983041610998734
