@@ -1,0 +1,880 @@
+\documentclass[10pt,conference,letterpaper]{IEEEtran}
+
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{texgyretermes-regular.otf}[
+  BoldFont=texgyretermes-bold.otf,
+  ItalicFont=texgyretermes-italic.otf,
+  BoldItalicFont=texgyretermes-bolditalic.otf
+]
+\setCJKmainfont{FandolSong-Regular.otf}[
+  BoldFont=FandolSong-Bold.otf,
+  ItalicFont=FandolKai-Regular.otf
+]
+\setCJKsansfont{FandolHei-Regular.otf}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{stfloats}
+\usepackage{placeins}
+
+\usepackage{amsthm}
+\newtheorem{lemma}{引理}
+\newtheorem{theorem}{定理}
+\providecommand{\FMtodo}[1]{\textbf{[待作者补充：#1]}}
+\renewcommand{\proofname}{证明}
+\renewcommand{\refname}{参考文献}
+\floatname{algorithm}{算法}
+\algrenewcommand\algorithmicrequire{\textbf{输入：}}
+\algrenewcommand\algorithmicforall{\textbf{对于所有}}
+\algrenewcommand\algorithmicfor{\textbf{对于}}
+\algrenewcommand\algorithmicif{\textbf{若}}
+\algrenewcommand\algorithmicthen{\textbf{则}}
+\algrenewcommand\algorithmicelse{\textbf{否则}}
+\algrenewcommand\algorithmicdo{\textbf{执行}}
+\algrenewcommand\algorithmicend{\textbf{结束}}
+\algrenewcommand\algorithmicreturn{\textbf{返回}}
+
+\newcommand{\method}{FedMATRIX-LoRA}
+\newcommand{\best}[1]{\textbf{#1}}
+
+\title{FedMATRIX-LoRA：面向资源受限联邦微调的客户端感知矩阵级适配}
+
+\author{\IEEEauthorblockN{匿名作者}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+联邦微调需要兼顾客户端数据异构性与有限的训练资源。对于低秩适配（LoRA），分配问题不仅涉及适配器容量，还涉及每个客户端应更新哪些目标矩阵。本文提出 FedMATRIX-LoRA，一种面向资源受限联邦微调的客户端感知矩阵级适配框架。每个客户端在当前全局适配器下，利用一个本地小批次评估候选矩阵，并根据所得重要性评分构建可行配置。服务器在共享训练预算和轮次时延目标下协调客户端参与及矩阵配置。选中的适配器在本地训练，再按矩阵聚合。这一设计将数据相关的适配偏好与资源可行性结合起来，而不改变 LoRA 参数化方式。图像分类、语言理解和对话摘要实验表明，在所采用的解析式客户端资源画像下，本文方法在任务指标和资源效率方面优于所评估的基线。
+\end{abstract}
+
+\begin{IEEEkeywords}
+联邦微调，低秩适配，客户端感知矩阵选择，资源异构性
+\end{IEEEkeywords}
+
+\section{引言}
+% I1: 联邦适配问题的来源。
+基础模型提供可复用的表示，但模型适配通常依赖不同机构或设备持有的数据。联邦学习使这些数据持有方无须汇集原始样本，就能共同优化共享模型~\cite{mcmahan2017communication,kairouz2021advances}。然而，预训练模型规模庞大，使完整参数更新对显存、计算和通信能力有限的客户端代价高昂。低秩适配（LoRA）在保持预训练主干固定的同时，以紧凑因子表示权重更新，从而减少可训练参数集合~\cite{hu2022lora}。联邦 LoRA 因而使协同适配更易实施，但仍留下一个分配问题：每个客户端应利用自身可用资源训练适配器的哪些部分？
+
+% I2: 显存动机及秩与位置的区别。
+仅凭适配器大小无法回答这一问题。训练显存包括冻结的主干、可训练参数及其优化器状态，以及反向传播所需的中间激活。降低秩会缩小适配器相关状态，但不一定消除到达可训练位置所需的反向计算。Fed-HeLLo 指出这一区别，并报告在激活占主要部分时，降低秩带来的总显存节省有限~\cite{zhang2025fedhello}。因此，选择可训练位置是秩调整的补充：在部分适配器执行方式下，它既改变接收更新的参数，也改变必须保留的激活依赖。我们在固定秩下研究目标矩阵选择，将这一决策与各选中适配器内部的容量分配区分开来。
+
+% I3: 先介绍矩阵，再讨论选择。
+一个 Transformer 块包含查询、键、值和前馈变换等多个目标投影。每个投影都可以接受独立的 LoRA 更新，因此块级分配将本可分别作出的选择绑定在一起。LoRA 的位置实验和 AdaLoRA 的自适应秩分配已经表明，不同矩阵及层的适配价值存在差异~\cite{hu2022lora,fm_adalora2023}。这些发现促使我们将适配器子集视为决策变量，而不是先选定共同的位置模式、再仅改变其大小。在固定秩下，矩阵级选择使客户端可以保留块内的部分投影，而无须给该块内每个候选投影都分配训练容量。
+
+% I4: 重要性及数据分布的作用。
+在投入训练预算之前选择这些候选对象，需要先估计其价值。重要性评分通过衡量参数块对适配目标的敏感度提供这种估计。基于梯度与 Fisher 的选择方法使用任务损失的信息确定更新优先级~\cite{fm_fish2021,zhang2025fedhello}。在联邦学习中，用于评估的数据至关重要：两个客户端即使从相同的全局适配器出发，也可能因样本分布不同而优化不同的本地目标。因此，矩阵重要性应被理解为以模型状态和数据分布为条件的量，而不是预训练架构的固定属性。这引出了一个问题：单一的重要性向量能否充分代表异构客户端的适配优先级？
+
+% I5: 承认已有客户端感知工作，并说明本文焦点。
+Fed-HeLLo 在服务器持有的代理数据上估计层重要性，并使用所得评分指导客户端分配~\cite{zhang2025fedhello}。代理分布提供共享参照，但给出的优先级可能不同于单个客户端目标所诱导的优先级。Fed-pilot 进一步将本地及全局汇总的重要性信息纳入显存约束下的 LoRA 分配~\cite{fm_fedpilot2025}。在重要性引导适配的基础上，我们研究每个客户端内部的单独目标投影选择，并在本地显存、时延限制和共享轮次预算下协调这些选择。由此产生的问题将重要性信息的来源、选择粒度和所选更新的执行可行性耦合起来。
+
+% I6: 仅描述协议；此处尚无实证结果。
+一项受控动机对比旨在区分矩阵优先级差异及其对本地适配的影响。在 CIFAR100/ViT-base 上，它比较三种方法：Local 为每个客户端分配自身评分；Local-Mean 将客户端评分平均为一个共享向量；Server-Proxy 评估独立的服务器代理集。对比覆盖 IID 数据，以及浓度参数为 $1.0$ 和 $0.1$ 的 Dirichlet 划分。每组对比固定评分公式、初始适配器、选中矩阵数量、秩、本地训练长度和可行性检查。矩阵选择差异与留出本地验证集损失下降量分别测量。Local-Mean 单独考察共享相同本地计算证据的影响，Server-Proxy 则考察不同的评分数据来源。图~\ref{fig:fm-motivation} 中计划绘制的两个子图将这些问题联系起来，但不把“选择不同”等同于“选择更好”。
+\FMtodo{实验 P 结果待补。须填入经核实的矩阵选择差异及配对验证损失结果和不确定性，再作实证结论。}
+
+\begin{figure}[!t]
+  \centering
+  \fbox{\parbox[c][1.2in][c]{.9\columnwidth}{\centering\FMtodo{经核实的实验 P 图}}}
+  \caption{数据异构条件下拟进行的评分来源动机对比。(a) Local 与 Server-Proxy 所选矩阵之间的 Jaccard 距离。(b) 在匹配的矩阵数量、秩和训练长度下，Local、Local-Mean 与 Server-Proxy 的留出本地验证损失下降量。\FMtodo{填入经核实的 P 子图、种子集合、汇总单位和不确定性定义。}}
+  \label{fig:fm-motivation}
+\end{figure}
+
+% I7: 两项设计要求。
+方法设计面临两部分挑战。第一，重要性评估必须在当前全局模型下区分客户端特定的适配优先级，而不能要求对每个候选配置都试训练。低开销的梯度画像用于解决这一评估问题。第二，必须将这些优先级转化为可行分配。高分子集可能超出客户端显存上限；各自可行的配置在一起也可能超出轮次预算，或造成过高的同步时延。因此，仅有共享的重要性排序或独立的本地选择，都不足以确定所需的训练轮次。客户端相关评估与资源可行协调必须连接起来。
+
+% I8: 按两项要求介绍方法。
+我们提出 FedMATRIX-LoRA，一种面向资源受限联邦微调的客户端感知矩阵级适配框架。在画像刷新时，每个客户端在当前全局适配器下，用一个本地小批次评估候选 LoRA 因子。所得评分确定配置的优先级，资源模型则确定哪些配置可行。客户端在不同的矩阵等价成本下生成候选配置；服务器在共享预算和时延目标下协调参与决策与配置选择。选中的适配器在本地训练，再按矩阵聚合以更新共享的全局适配器。在这一设计中，本地证据确定偏好的适配位置，资源协调确定哪些提议的更新可以共同执行。
+
+\begin{figure*}[t]
+  \centering
+  \resizebox{.84\textwidth}{!}{%
+    \setlength{\unitlength}{1pt}%
+    \begin{picture}(1159.92,472.08)
+      \put(0,0){\includegraphics[width=1159.92pt]{figures/fig2_method_overview.pdf}}
+      \put(321,242){\color{white}\rule{145pt}{35pt}}
+      \put(323,261){\makebox(0,0)[l]{\color[HTML]{17324D}\fontsize{12}{13}\selectfont\sffamily\bfseries Local gradient-squared}}
+      \put(323,247){\makebox(0,0)[l]{\color[HTML]{17324D}\fontsize{11}{12}\selectfont\sffamily profiling + depth calibration}}
+      \put(618,158){\color[HTML]{FFF0C9}\rule{55pt}{37pt}}
+      \put(645,183){\makebox(0,0){\color[HTML]{5D4308}\fontsize{9}{10}\selectfont\sffamily\bfseries Budget-}}
+      \put(645,172){\makebox(0,0){\color[HTML]{5D4308}\fontsize{9}{10}\selectfont\sffamily\bfseries constrained}}
+      \put(645,161){\makebox(0,0){\color[HTML]{5D4308}\fontsize{9}{10}\selectfont\sffamily\bfseries allocation}}
+    \end{picture}%
+  }
+  \caption{\method{} 的工作流程。客户端相关画像对目标矩阵评分；位置相关训练显存与客户端时延约束决定可行配置；配置级全局协调在轮次预算下从中进行选择。}
+  \label{fig:overview}
+\end{figure*}
+
+本文的贡献有三点：
+\begin{itemize}
+  \item 我们针对资源受限的联邦微调，建立客户端感知的目标矩阵选择模型，使可训练投影子集响应本地数据与设备可行性，而不是仅由适配器容量指定。
+  \item 我们提出 FedMATRIX-LoRA，将基于本地梯度的画像、可行配置生成与服务器协调连接起来。该框架支持在 Transformer 块内及客户端之间选择不同的投影，同时通过按矩阵聚合维护共享的全局适配器。
+  \item 我们给出条件性的平稳性分析，将选择性聚合与有效更新偏差、矩阵覆盖联系起来，并在异构数据和解析式资源画像下的图像分类、语言理解及对话摘要任务上评估完整框架。
+\end{itemize}
+
+第~\ref{Sec.relatedworks} 节说明本文与已有工作的关系。第~\ref{sec.model} 节给出系统模型与问题定义，第~\ref{Sec.alg} 节介绍 FedMATRIX-LoRA 及其分析。第~\ref{Sec.evaluation} 节报告评估结果，第~\ref{Sec.conclusion} 节给出结论。
+
+
+\section{相关工作}\label{Sec.relatedworks}
+\noindent\textbf{参数高效与选择性适配。}
+参数高效微调可以改变更新的表示方式，也可以改变被训练的参数子集。LoRA 通过附着在预训练矩阵上的低秩因子表示更新，而 QLoRA 将量化的冻结主干与可训练的低秩适配器相结合~\cite{hu2022lora,dettmers2023qlora}。这些机制减少的是适配开销中的不同部分。目标选择进一步带来一种选择：并非每个客户端在每一轮都必须训练所有可用适配器。在异构系统中，这一区分尤为有用，因为相同的候选架构可以容纳不同的可行可训练子集。
+
+重要性感知方法为这些选择提供了依据。AdaLoRA 通过对 SVD 风格的更新参数化进行重要性引导的剪枝，在权重矩阵之间分配非均匀的秩预算~\cite{fm_adalora2023}。FISH 则根据基于 Fisher 的重要性评分构建稀疏的可训练参数掩码~\cite{fm_fish2021}。这些方法表明，在有限的适配预算下，均匀分配并非唯一的组织方式。FedMATRIX-LoRA 将重要性引导的选择用于另一项决策：分配给每个联邦客户端的固定秩目标子集。矩阵内部的秩分配控制适配器容量，而客户端相关的目标选择决定哪些投影接收该客户端的更新。随后，资源协调确定哪些客户端配置能够一起执行。
+
+\noindent\textbf{异构联邦 LoRA。}
+HetLoRA 支持异构的客户端秩，并将本地秩自剪枝与服务器端稀疏加权聚合相结合~\cite{cho2024hetlora}。FAH-QLoRA 在联邦资源适配中联合考虑量化与 LoRA 秩~\cite{gao2025fah}。这些方法说明，根据客户端资源调整容量或数值精度具有价值。然而，正如 Fed-HeLLo 所讨论的，在激活占主导的场景下降低秩主要减少优化器状态显存，因此部分层训练成为一种互补的分配维度~\cite{zhang2025fedhello}。LEGEND 联合配置微调深度与秩分布，明确将可训练层的位置与资源使用联系起来~\cite{liu2025legend}。它对深度和秩的结合说明，位置与容量可能共同影响资源--性能权衡。
+
+Fed-HeLLo 还通过在服务器持有的代理数据上计算评分，并采用几何分配策略，考虑不同层的重要性差异~\cite{zhang2025fedhello}。其评分引导策略将共享评估转化为分配概率；即使底层重要性证据是共享的，不同客户端仍可能得到不同掩码。FedMATRIX-LoRA 则在各客户端的数据上估计重要性，并将块内的各个投影分别作为选择对象。这一区分对应异构性的两个方面：客户端训练容量的差异，以及分配这些容量所依据的数据相关优先级的差异。
+
+Fed-pilot 是与本文最接近的重要性引导分配工作。在其按块索引的形式中，本地及跨客户端、跨时间汇总的信息增益评分指导显存约束下的 LoRA 分配，并通过补偿聚合处理不均衡的更新~\cite{fm_fedpilot2025}。FedMATRIX-LoRA 建立了不同的分配形式：块内独立的目标投影指示变量在显存上限、时延约束和共享轮次预算下跨客户端协调。在刷新轮次中，客户端对候选目标集合进行本地画像，服务器再比较由此形成的配置。该形式将块内投影选择及客户端特定的重要性，与联合调度训练轮次的可行性连接起来。
+
+\noindent\textbf{聚合与资源协调。}
+聚合与分配处理的是联邦适配中相关但不同的环节。FedEx-LoRA 处理低秩因子聚合引入的不匹配，而 LoRA-FAIR 研究聚合与初始化的改进~\cite{singhal2025fedex,bian2025lorafair}。这些方向关注本地更新如何结合。Oort、FedBalancer 和 PyramidFL 等资源感知方法处理异构条件下的参与者选择或训练工作协调~\cite{lai2021oort,shin2022fedbalancer,li2022pyramidfl}。在 FedMATRIX-LoRA 中，服务器决策还包含分配给参与客户端的可训练目标子集。因此，可行配置把本地适配偏好与轮次级分配问题联系起来，而不是将客户端参与和内部可训练子集视为互不相关的决策。按矩阵进行的分析刻画了这种选择性执行所引起的更新模式。
+
+\section{系统模型与问题定义}\label{sec.model}
+
+\subsection{系统模型与联邦 LoRA 基础}
+考虑由一台服务器和 $N$ 个客户端组成的异构联邦 LoRA 微调系统。每个客户端 $i$ 拥有私有本地数据集 $\mathcal{D}_i$、设备端训练显存容量 $M_i^{\max}$（在本实现中对应可用的 GPU 显存）、估计通信带宽 $B_i$ 和异构计算资源。为保护数据隐私，所有本地数据集在整个训练过程中均保留于相应客户端，绝不上传到服务器。服务器初始化预训练主干模型 $\Theta^0$，该模型在联邦微调期间保持冻结，并在通信轮次 $k$ 维护全局 LoRA 适配器参数 $\theta^k$。
+
+令 $n_i=|\mathcal{D}_i|$ 表示客户端 $i$ 的本地训练样本数。联邦 LoRA 微调旨在最小化以下全局目标：
+\begin{equation}
+F(\theta)=\frac{1}{N}\sum_{i=1}^{N}F_i(\theta),
+\end{equation}
+其中
+\begin{equation}
+F_i(\theta)=
+\frac{1}{n_i}
+\sum_{z\in\mathcal{D}_i}
+\ell(\Theta^0,\theta;z),
+\label{eq:fl-objective}
+\end{equation}
+而 $\ell(\cdot)$ 表示使用冻结主干 $\Theta^0$ 和可训练 LoRA 参数 $\theta$ 计算的任务损失。
+
+对于目标线性变换 $W_j\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$，LoRA 将其更新参数化为
+\begin{equation}
+\Delta W_j=B_jA_j,
+\end{equation}
+其中 $A_j\in\mathbb{R}^{r\times d_{\mathrm{in}}}$ 和 $B_j\in\mathbb{R}^{d_{\mathrm{out}}\times r}$ 是秩为 $r\ll \min(d_{\mathrm{in}},d_{\mathrm{out}})$ 的低秩矩阵。
+
+我们将可训练适配器子集视为客户端特定的决策。目标矩阵指查询、键或值等预训练投影；选中目标矩阵意味着更新与其关联的 LoRA 因子，而不是更新冻结的预训练矩阵。每个选中适配器的秩固定且相同，因此配置差异来自目标矩阵的选择。
+
+\subsection{客户端感知的矩阵级 LoRA 分配}
+本文在目标矩阵粒度上建模联邦 LoRA 分配。令
+\begin{equation}
+\mathcal{A}=\{W_1,W_2,\ldots,W_L\}
+\end{equation}
+表示从主干模型中提取的有序 LoRA 兼容目标矩阵集合。这些矩阵包括 Transformer 块中的查询、键、值、输出和前馈投影矩阵。
+
+对于通信轮次 $k$ 的客户端 $i$，矩阵激活决策由以下二值向量表示：
+\begin{eqnarray}
+\mathbf m^k_i=[{m}_{i,1}^k,\cdots,{m}_{i,L}^k],
+\end{eqnarray}
+其中
+\begin{eqnarray}
+&&{m}_{i,j}^k= \left\{
+\begin{aligned}
+&1,\mbox{若 $W_j$ 被激活以进行本地训练};\\
+&0,\mbox{否则。}
+\end{aligned}
+\right.
+\end{eqnarray}因此，每个激活向量指定客户端 $i$ 在通信轮次 $k$ 中训练的 LoRA 目标矩阵子集。
+
+令 $V_i^k(\mathbf m_i^k)$ 表示客户端 $i$ 的矩阵配置画像效用。它根据当前全局适配器下的本地数据计算，概括了所选更新的估计优先级。我们设 $V_i^k(\mathbf 0)=0$。画像过程见第~\ref{sec:fm-profiling} 节。
+
+若约束同一个 Transformer 块中的所有候选矩阵共用一个选择指示变量，就得到层组分配。
+
+\subsection{资源约束与问题定义}
+LoRA 目标矩阵的激活决策决定每个参与客户端的资源消耗。我们分别建模训练成本、训练显存占用和训练时延。
+
+首先，令 $c_i(\mathbf m^k_i)$ 表示矩阵配置 $\mathbf m^k_i$ 对应的标准化训练成本。我们用激活的 rank-8 矩阵数量近似这一成本，即 $c_i(\mathbf m^k_i)=\sum_{j=1}^{L}m_{i,j}^k$。这一标准化计数并非对各矩阵计算量或显存的实际测量；即使秩相同，不同矩阵的开销也可能不同，显存将在下文单独建模。
+
+
+训练显存消耗同时取决于激活矩阵的数量和位置。对于任意非零配置 \(\mathbf m\)，令
+\(\mathcal{J}(\mathbf m)=\{j\mid m_j=1\}\)，且 \(j_{\min}(\mathbf m)=\min\mathcal{J}(\mathbf m)\)。
+沿用部分层联邦 LoRA 微调中常用的训练显存分解方式 \cite{zhang2025fedhello}，我们设 \(M_i(\mathbf0)=M_i^{\mathrm{fixed}}\)；对于非零配置，采用
+\begin{equation}
+M_i(\mathbf m)=M_i^{\mathrm{fixed}}+q_i(r)c_i(\mathbf m)+\sum_{j=j_{\min}(\mathbf m)}^{L}\mu_{i,j},
+\label{eq:memory}
+\end{equation}
+其中，$M_i^{\mathrm{fixed}}$ 表示冻结主干和固定运行时缓冲区占用的显存，$q_i(r)$ 表示每个激活的 rank-\(r\) LoRA 矩阵所需的参数及优化器显存，$\mu_{i,j}$ 表示保留的激活显存。最后一项体现了 Transformer 微调中显存与位置相关的特征：激活更早位置的矩阵需要保留更长的反向传播路径，因此消耗更多激活显存。
+
+客户端 $i$ 的时延由本地计算和通信两部分构成。令 $\gamma_i$ 表示计算系数，$\sigma_i$ 表示每个激活矩阵的通信数据量，$B_i$ 表示可用带宽。其时延为
+\begin{equation}
+\begin{aligned}
+&&T_i^{\mathrm{comp}}(\mathbf m_i)=\gamma_i c_i(\mathbf m_i),\\
+&&T_i^{\mathrm{comm}}(\mathbf m_i)=\frac{\sigma_i c_i(\mathbf m_i)}{B_i},\\
+&&T_i(\mathbf m_i)=T_i^{\mathrm{comp}}(\mathbf m_i)+T_i^{\mathrm{comm}}(\mathbf m_i).
+\end{aligned}
+\label{eq:latency-model}
+\end{equation}
+这些系数定义解析式资源画像；相同的矩阵等价成本不一定对应相同的实测硬件开销。
+
+
+在通信轮次 $k$，服务器在共享资源预算下联合决定参与客户端及其矩阵配置。令 $S_k$ 表示候选客户端集合，$z_i^k\in\{0,1\}$ 表示客户端 $i$ 是否参与当前轮次，$C^k$ 表示轮次级训练预算，$\tau^k$ 表示当前通信轮次的时延。令 \(\ell_i^{\min}\) 和 \(\ell_i^{\max}\) 分别约束参与客户端 \(i\) 激活矩阵的最小和最大数量，令 \(\lambda>0\) 控制效用与时延的权衡。
+
+\begin{align}
+\max_{\{\mathbf m_i^k,z_i^k\},\tau^k}
+\quad&
+\sum_{i\in S_k}
+V_i^k(\mathbf m_i^k)
+-\lambda\tau^k
+\label{eq:joint-objective}\\
+\text{s.t.}\quad&
+\sum_{i\in S_k}
+c_i(\mathbf m_i^k)
+\leq C^k,
+\label{eq:joint-budget}\\
+&
+m_{i,j}^k\leq z_i^k,
+\label{eq:participation}\\
+&
+\ell_i^{\min}z_i^k
+\leq
+\sum_{j=1}^{L}m_{i,j}^k
+\leq
+\ell_i^{\max}z_i^k,
+\label{eq:bound}\\
+&
+M_i(\mathbf m_i^k)
+\leq M_i^{\max},
+\quad
+\forall i:z_i^k=1,
+\label{eq:joint-memory}\\
+&
+T_i(\mathbf m_i^k)
+\leq
+\tau^k
+\leq
+T_{\max},
+\quad
+\forall i:z_i^k=1 .
+\label{eq:joint-latency}
+\end{align}
+目标函数在最小化轮次时延的同时，最大化汇总后的客户端相关适配效用。式~\eqref{eq:joint-budget}--\eqref{eq:joint-latency} 分别施加轮次级矩阵等价预算、参与决策一致性、激活矩阵数量上下界、各客户端训练显存上限以及轮次时延上限。特别地，式~\eqref{eq:participation} 和式~\eqref{eq:bound} 共同保证未参与的客户端不选择矩阵，而参与的客户端选择数量在 \(\ell_i^{\min}\) 到 \(\ell_i^{\max}\) 之间的矩阵。
+
+
+这一问题将客户端层面的可行性与共享轮次预算耦合在一起。我们先在本地构建可行配置，再由服务器协调这些配置来实现求解。
+
+\section{FedMATRIX-LoRA 设计}\label{Sec.alg}
+\subsection{框架概述}
+FedMATRIX-LoRA 将数据相关的矩阵评估与资源可行的执行联系起来。如图~\ref{fig:overview} 所示，客户端在当前全局适配器下画像候选矩阵，并构建满足本地限制的配置。服务器在轮次预算和时延目标下协调这些配置。随后，客户端更新被分配的适配器，服务器按矩阵聚合结果。下文分别介绍评分机制与分配过程。
+
+\subsection{客户端相关的矩阵画像}\label{sec:fm-profiling}
+\noindent\textbf{客户端相关的评估。}
+画像在选定客户端训练配置之前提供重要性估计。在相同的全局适配器下，本地损失依赖于客户端的样本；因此，其梯度描述了该客户端适配目标下损失对参数的敏感性。共享评分向量概括一个共同的参考目标，而分别进行的本地评估则保留客户端目标之间的差异。我们利用这一区别在目标矩阵粒度分配更新优先级。其目的是决定客户端应训练哪些 LoRA 因子，而第~\ref{sec:fm-allocation} 节的资源约束决定哪些组合能够执行。
+
+\noindent\textbf{单次反向传播的梯度评分。}
+基于梯度与 Fisher 的准则已被用于选择可训练参数和 LoRA 层~\cite{fm_fish2021,zhang2025fedhello}。我们采用梯度平方准则，因为它能够在一次反向传播中评估全部候选目标，而无须分别训练各个提议的配置。在第 $k$ 轮的刷新中，客户端 $i$ 在候选投影上附加 LoRA 模块，加载当前全局适配器 $\theta^k$，并计算本地小批次 $\mathcal B_i^k$ 上的平均损失。令 $\theta_j^k$ 表示与目标矩阵 $j$ 关联的 LoRA 因子。其原始评分为
+
+\begin{equation}
+ g_{i,j}^k=
+ \sum_{p\in\theta_j^k}
+ \left(
+ \nabla_p
+ \mathcal L_i(\theta^k;\mathcal B_i^k)
+ \right)^2 .
+ \label{eq:fim}
+\end{equation}
+该评分测量适配器可训练坐标上的本地批次损失梯度的汇总幅值。平方运算使不同参数坐标的贡献非负，求和则产生块级度量，而不是每个参数的平均敏感度。在固定参数化下，较大的梯度范数表示损失对该参数块扰动的即时敏感性较强，因此可用作更新优先级信号。由于计算使用批次平均损失的梯度，我们称其为受 Fisher 启发的代理指标，而非精确的 Fisher 估计。它用于在本地训练之前排列候选更新的优先级，不能替代训练后观察到的任务指标。
+
+评分同时依赖本地样本与 $\theta^k$。因此，即使各客户端在某一轮从相同的全局状态出发，也可能对同一目标赋予不同优先级。以后刷新时重新评估，还允许这些优先级随着全局适配器的变化而改变。单次反向传播的设计会在每次刷新时为所有候选对象取得评分，包括该客户端上一次本地更新未选中的对象。这避免下一次分配决策局限于此前活跃的目标，同时无须对候选配置进行试探性优化。
+
+\noindent\textbf{共享的位置校准。}
+在数据相关评分之外，我们对候选位置施加结构性偏好。关于部分 LoRA 微调的已有研究报告，在其研究设置下，较深层的适配可以取得有利的性能--资源权衡~\cite{liu2025legend}。我们通过乘性深度因子纳入这一观察：
+\begin{equation}
+ \widetilde g_{i,j}^k=g_{i,j}^k(1+d_j)^{\rho},
+ \label{eq:depth}
+\end{equation}
+这里，\(d_j=(j-1)/(L-1)\) 是有序候选集合中的归一化位置。对于所评估的配置，\(\rho=1+1.5\mathbb I_{\mathrm{pair}}+\eta\)，其中 \(\mathbb I_{\mathrm{pair}}\) 指示句子对任务，而 \(\eta=0,1,2\) 分别对应 IID、一般 non-IID 和严重 non-IID 设置。这是指定的校准日程；本地数据依赖仍保留在 \(g_{i,j}^{k}\) 中。
+
+该乘子施加一个共同的位置偏好，但不会替代客户端特定的证据。它可能改变单个客户端的排序，却不会强制原始评分不同的客户端共享同一排序或选择相同的矩阵。这区分了重要性信息的来源与施加在其上的结构先验。第~\ref{sec:fm-ablations} 节的 No-Depth 对比旨在保留本地评分与分配过程的同时，单独考察这种校准的贡献。
+
+\noindent\textbf{配置效用与刷新。}
+服务器协调不同客户端提出的配置。因此，我们使用公共的归一化尺度，而不是将每个客户端自身的最大评分分别定为单位尺度：
+\begin{equation}
+G_{\max}^k=\max_{\substack{h\in S_k\\1\le j\le L}}\widetilde g_{h,j}^k,\qquad
+ v_{i,j}^k=\frac{\widetilde g_{i,j}^k
+ }{\max\{G_{\max}^k,\delta\}}\in[0,1],
+ \label{eq:normalization}
+\end{equation}
+正的常数 $\delta$ 防止除零。使用相同的除数能够保持校准后评分在客户端与矩阵之间的相对大小，并设定服务器效用--时延权衡所用的效用尺度。对于分配 $\mathbf m_i^k$，配置效用为 $V_i^k(\mathbf m_i^k)=\sum_{j=1}^{L}m_{i,j}^{k}v_{i,j}^{k}$。因此，本地数据确定原始优先级，深度因子提供结构性偏好，公共尺度使这些评分能直接用于共享的分配目标。求和得到的是配置选择的代理效用，并不假设完整训练损失可分解为独立的矩阵损失。
+
+评分在指定的刷新轮次之间缓存，并在缓存不可用或到达刷新轮次时重新计算。复用避免在每次分配决策时重复画像，而刷新使评分向量重新对应当前适配器。原始样本和画像梯度留在本地；协调使用矩阵评分与配置摘要。因此，画像样本数和刷新日程属于评分协议，而不是额外的优化变量。第~\ref{sec:fm-score-study} 节指定了检验配置评分能否排列短期留出损失下降量的受控测试，第~\ref{sec:fm-ablations} 节指定了评分来源、选择粒度和校准的端到端对比。
+
+\subsection{资源可行的矩阵分配}\label{sec:fm-allocation}
+在固定轮次 \(k\) 中，若不会产生歧义，则省略配置属性和调度变量的轮次上标。客户端 \(i\) 生成的每个可行配置 \(\kappa\) 表示为
+\[
+\kappa=(V_{i\kappa},c_{i\kappa},T_{i\kappa},M_{i\kappa},\mathbf m_{i\kappa}),
+\]
+其中，\(V_{i\kappa}\)、\(c_{i\kappa}\)、\(T_{i\kappa}\)、\(M_{i\kappa}\) 和 \(\mathbf m_{i\kappa}\) 分别表示画像适配效用、标准化矩阵等价成本、估计时延、估计训练显存消耗和二值目标矩阵分配。每个客户端上传紧凑的配置菜单 \(\mathcal K_i^k\)。
+
+\noindent\textbf{本地配置。}
+在所采用的显存模型下，可行性通过保留激活项取决于选中矩阵的数量和最早选中位置。因此，对于每个数量 $c$，客户端搜索可行的最早位置，保留画像效用最高的配置。令 $Q_{i,e}^k(t)$ 表示从后缀 $\{e,\ldots,L\}$ 中选择 $t$ 个矩阵的最大效用。其递推式及最早选中位置为 $e$ 的配置效用为：
+\(Q_{i,e}^k(0)=0\)，\(Q_{i,L+1}^k(t>0)=-\infty\)。
+\begin{equation}
+ \begin{aligned}
+ Q_{i,e}^k(t)&=\max\left\{Q_{i,e+1}^k(t),v_{i,e}^k+Q_{i,e+1}^k(t-1)\right\},\quad t\ge1,
+ \\
+ \Phi_{i,e}^k(c)&=v_{i,e}^k+Q_{i,e+1}^k(c-1).
+ \end{aligned}
+ \label{eq:client-dp}
+\end{equation}
+
+只保留满足矩阵数量、显存和时延约束的配置。在当前基于数量的时延模型下，成本相同的配置消耗相同的服务器预算并具有相同的时延；因此，每个成本仅保留效用最高的可行配置，已足以供后续协调使用。
+
+\noindent\textbf{服务器协调。}
+服务器枚举不同的可行时延阈值 $\tau\le T_{\max}$。对于每个阈值，它移除时延超过 $\tau$ 的配置，再求解剩余的多选择背包问题，即每个客户端至多选择一个配置。令 $H_i(w)$ 表示在预算 $w$ 下，从前 $i$ 个客户端菜单得到的最大效用，其递推式为：
+
+\begin{equation}
+ H_i(w)=
+ \max_{\kappa\in
+ \mathcal K_i^k(\tau)\cup\{\varnothing\}:c_{i\kappa}\le w}
+ \left\{
+ H_{i-1}(w-c_{i\kappa})
+ +
+ V_{i\kappa}
+ \right\},
+ \label{eq:server-dp}
+\end{equation}
+
+其中，$\mathcal K_i^k(\tau)$ 是按时延筛选后的菜单，$\varnothing$ 是效用和成本均为零的非活跃选项，且 $H_0(w)=0$。
+
+服务器选择使总效用减去 $\lambda\tau$ 最大的阈值与配置分配。该过程优化的是所定义的画像目标；它的作用是在资源模型下实现客户端相关的选择。算法~\ref{alg:fedmatrix} 概括完整的训练轮次。
+
+\subsection{本地训练与按矩阵聚合}
+
+确定最优配置分配后，服务器将全局适配器 \(\theta^k\) 和选中的矩阵分配一并发送给相应客户端。本地仅更新选中的 LoRA 参数。若下游任务需要任务特定的可训练模块，这些模块与选中的 LoRA 参数联合优化。
+
+由于不同客户端可能更新不同的 LoRA 矩阵子集，聚合过程对每个可训练矩阵独立执行。令 \(\mathcal U_j^k\) 表示返回矩阵 \(j\) 更新的客户端集合，\(\theta_{i,j}^{k+1}\) 表示客户端 \(i\) 对应的本地更新后 LoRA 参数。服务器按矩阵执行客户端等权聚合：
+
+\begin{equation}
+ \theta_j^{k+1}
+ =
+ \begin{cases}
+ |\mathcal U_j^k|^{-1}
+ \displaystyle\sum_{i\in \mathcal U_j^k}
+ \theta_{i,j}^{k+1},
+ &
+ |\mathcal U_j^k|>0,
+ \\[6pt]
+ \theta_j^k,
+ &
+ |\mathcal U_j^k|=0 .
+ \end{cases}
+ \label{eq:aggregation}
+\end{equation}
+
+更新后的全局适配器用于初始化下一轮。由于不同目标矩阵的更新客户端集合可能不同，聚合仅对贡献该矩阵的客户端求平均；若没有客户端返回更新，则保留先前的值。
+\begin{algorithm}[t]
+\caption{通信轮次 $k$ 中的 \method{}}
+\label{alg:fedmatrix}
+\footnotesize
+\begin{algorithmic}[1]
+\Require
+全局适配器 \(\theta^k\)，
+候选矩阵集合 \(\mathcal A\)，
+候选客户端 \(S_k\)，
+预算约束 \(C^k\)，
+时延上限 \(T_{\max}\)
+\Statex \hrulefill
+\Statex \textit{客户端相关的矩阵画像与分配：}
+
+\ForAll{\(i\in S_k\)}
+    \If{画像缓存不可用或需要刷新}
+        \State 在候选矩阵 \(\mathcal A\) 上插入 LoRA 模块
+        \State 用一个本地小批次计算矩阵重要性分数 \(g_{i,j}^k\)
+        \State 施加位置感知校准，得到 \(\widetilde g_{i,j}^k\)
+    \Else
+        \State 复用缓存的矩阵重要性分数
+    \EndIf
+    \State 归一化矩阵效用，得到 \(v_{i,j}^k\)
+    \State 通过后缀动态规划生成可行配置菜单 \(\mathcal K_i^k\)
+\EndFor
+
+\Statex \hrulefill
+\Statex \textit{资源可行的服务器协调：}
+
+\State 初始化最优目标值 \(U^*\leftarrow -\infty\)
+\ForAll{不同的可行时延阈值 \(\tau\leq T_{\max}\)}
+    \State 移除满足 \(T_{i\kappa}>\tau\) 的配置
+    \State 在预算约束 \(C^k\) 下用动态规划求解 MCKP
+    \State 计算目标值 \(\sum_i\sum_{\kappa}x_{i\kappa}V_{i\kappa}-\lambda\tau\)
+    \If{当前目标值 \(>U^*\)}
+        \State 更新最优配置分配
+    \EndIf
+\EndFor
+
+\Statex \hrulefill
+\Statex \textit{本地训练与按矩阵聚合：}
+\State 向客户端下发选中的矩阵分配与 \(\theta^k\)
+\ForAll{被选中的客户端}
+    \State 仅在分配的矩阵上训练 LoRA 参数
+\EndFor
+\State 执行逐矩阵聚合，得到 \(\theta^{k+1}\)
+\State \Return 更新后的全局适配器 \(\theta^{k+1}\)
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{按矩阵聚合的收敛性}
+\label{sec:fm-convergence}
+我们分析按矩阵聚合规则所产生的有效更新。在此分析中，$\theta$ 包含 LoRA 参数及联合训练的共享任务模块。令 $P^k$ 表示到第 $k$ 轮所选更新参数块上的投影，这一选择在本地训练前确定。对于公共的正轮次尺度 $\gamma$，将实际聚合方向定义为 $v^k=(\theta^k-\theta^{k+1})/\gamma$。以当前模型、画像信息和已选配置为条件，记这些信息为 $\mathcal H_k$，并定义
+\begin{align}
+ b^k&=\mathbb E[v^k\mid\mathcal H_k]-P^k\nabla F(\theta^k),\\
+ \xi^k&=v^k-\mathbb E[v^k\mid\mathcal H_k].
+\end{align}
+因此 $\mathbb E[\xi^k\mid\mathcal H_k]=0$，更新可写为
+\begin{equation}
+ \theta^{k+1}=\theta^k-\gamma\bigl(P^k\nabla F(\theta^k)+b^k+\xi^k\bigr).
+\end{equation}
+偏差 $b^k$ 涵盖选择性聚合的影响，以及本地优化器更新与所选全局梯度之间的差异。这种表示并未将实验使用的 AdamW 优化器替换为 SGD。
+
+\noindent\textbf{假设。}
+假设 $F$ 在相关更新线段上具有 $\beta$-光滑性，并以 $F_{\inf}$ 为下界。假设有效更新误差满足
+\begin{equation}
+ \mathbb E\|b^k\|^2\le B_{\mathrm{upd}}^2,\qquad
+ \mathbb E\|\xi^k\|^2\le S_{\mathrm{upd}}^2.
+\end{equation}
+此外，假设存在有效矩阵覆盖：对于某个 $0<\alpha_{\mathrm{cov}}\le1$ 和 $\varepsilon_{\mathrm{cov},k}\ge0$，
+\begin{equation}
+ \mathbb E\|P^k\nabla F(\theta^k)\|^2
+ \ge\alpha_{\mathrm{cov}}\mathbb E\|\nabla F(\theta^k)\|^2
+       -\varepsilon_{\mathrm{cov},k}.
+\end{equation}
+这一条件量化了所选参数块覆盖的全局梯度能量。
+
+\begin{theorem}[期望驻点性]
+\label{thm:fm-stationarity}
+在上述假设下，对于 $0<\gamma\le1/\beta$ 和 $K$ 轮，有
+\begin{align}
+ \frac1K\sum_{k=0}^{K-1}\mathbb E\|\nabla F(\theta^k)\|^2
+ \le{}&\frac{2D_0}{\alpha_{\mathrm{cov}}\gamma K}\\
+ &+\frac{B_{\mathrm{upd}}^2+\beta\gamma S_{\mathrm{upd}}^2
+              +\bar\varepsilon_{\mathrm{cov}}}{\alpha_{\mathrm{cov}}},\nonumber
+\end{align}
+其中，对于固定的初始化，$D_0=F(\theta^0)-F_{\inf}$，且
+$\bar\varepsilon_{\mathrm{cov}}=K^{-1}\sum_k\varepsilon_{\mathrm{cov},k}$。
+\end{theorem}
+在固定分析轮数下，若取 $\gamma=c/\sqrt K\le1/\beta$，并且误差上界和覆盖常数在所分析运行中一致，则优化项和噪声项为 $O(K^{-1/2})$。剩余项由有效更新偏差和未覆盖的梯度能量控制。该结果刻画的是平均驻点性，而非最优测试准确率。
+
+客户端选择的贡献可以进一步明确。令 $n_j=|\mathcal U_j|>0$、$g_{i,j}=\nabla_jF_i(\theta)$、$g_j=N^{-1}\sum_i g_{i,j}$，以及 $\zeta_j^2=N^{-1}\sum_i\|g_{i,j}-g_j\|^2$。
+\begin{lemma}[按矩阵选择的偏差]
+\label{lem:fm-selection-bias}
+对于任意更新客户端集合 $\mathcal U_j$，
+\begin{equation}
+ \left\|\frac1{n_j}\sum_{i\in\mathcal U_j}g_{i,j}-g_j\right\|^2
+ \le\left(\frac N{n_j}-1\right)\zeta_j^2.
+\end{equation}
+\end{lemma}
+该界将聚合偏差与每个目标矩阵的参与程度和梯度异构性联系起来。证明见附录~\ref{app:fm-convergence}。
+
+
+
+\section{实验}\label{Sec.evaluation}
+本节通过覆盖不同数据集与模型设置的广泛仿真实验，评估所提出的 \method{} 的有效性。
+
+\subsection{评估设置}
+我们在 CIFAR100 \cite{krizhevsky2009cifar} 上评估图像分类，在 GLUE \cite{wang2019glue} 的 MNLI、QNLI、QQP 和 SST-2 上评估语言理解，并在 SAMSum \cite{gliwa2019samsum} 上评估对话摘要。
+
+表~\ref{tab:setup} 给出了主干模型、数据划分、轮数和 rank-8 矩阵成本预算；每轮有十个客户端。分类任务采用均等随机 IID 划分，或 $\alpha=1.0$、$0.1$ 的 Dirichlet non-IID 划分。SAMSum 使用连续分配的长度排序数据块构造严重偏斜，使用随机分配的长度排序数据块构造轻度偏斜。
+
+\begin{table*}[t]
+\centering
+\caption{评估设置。Non-IID \(x\) 表示 Dirichlet \(\alpha=x\)；Len-M/S 表示轻度/严重的长度偏斜；斜线分隔的预算按数据划分顺序排列。}
+\label{tab:setup}
+\setlength{\tabcolsep}{4.0pt}
+\begin{tabular}{@{}llllrrl@{}}
+\toprule
+数据集 & 任务 & 主干模型 & 数据划分 & 轮数 & 累计预算 & 指标 \\
+\midrule
+CIFAR100 & 图像分类 & ViT-base \cite{dosovitskiy2021vit} & IID, Non-IID 1.0/0.1 & 180 & 7,200/12,000 & 准确率 \\
+MNLI & 语言推断 & DeBERTa-v3-large \cite{he2021deberta} & IID, Non-IID 1.0 & 50 & 9,500 & 准确率 \\
+QNLI & 句子对分类 & RoBERTa-base \cite{liu2019roberta} & IID, Non-IID 1.0 & 80 & 4,800/7,200 & 准确率 \\
+QQP & 复述句分类 & DeBERTa-v3-large \cite{he2021deberta} & IID, Non-IID 1.0 & 50 & 9,500 & 准确率 \\
+SST-2 & 情感分类 & RoBERTa-base \cite{liu2019roberta} & IID, Non-IID 1.0 & 80 & 7,200 & 准确率 \\
+SAMSum & 对话摘要 & OPT-1.3B \cite{zhang2022opt} & IID, Len-M, Len-S & 40 & 10,000 & Rouge-L \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=.62\textwidth]{figures/fig3_main_results.pdf}
+  \caption{14 种设置下的最佳任务指标。方框标记每行的最大值；SAMSum 使用 Rouge-L，其余各行使用准确率。}
+  \label{fig:matrix}
+\end{figure*}
+
+\begin{table}[t]
+\centering
+\caption{系统与训练画像。}
+\label{tab:resource-profile}
+\setlength{\tabcolsep}{3.6pt}
+\begin{tabular}{@{}ll@{}}
+\toprule
+控制项 & 报告的配置 \\
+\midrule
+客户端数 & 10 \\
+训练显存预算 & 40/25/15 GB；比例 6:3:1 \\
+计算系数 & 每个 rank-8 矩阵等价量 0.8--2.0 s \\
+带宽 & 5--50 MB/s \\
+LoRA 秩／画像 & 8／一个本地小批次 \\
+本地训练上限 & 一个 epoch，最多 50 个小批次步 \\
+优化器 & AdamW \\
+批大小／学习率 & 1--32／\(10^{-5}\)--\(10^{-4}\) \\
+默认时延上限 & 每轮 200 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+联邦运行使用 NVIDIA A800-SXM4-80GB GPU。表~\ref{tab:resource-profile} 给出解析式客户端资源画像与训练设置。主要对比使用种子 2024，且共享数据划分和资源抽样。新增的评分与消融研究分别报告其种子集合和数据划分。累计训练成本 \(\overline C^K=\sum_{k=1}^{K}\sum_i c_i(\mathbf m_i^k)\) 不包含画像开销。时间曲线累计的是式~\eqref{eq:latency-model} 中的解析式时延，而非端到端墙钟时间。
+
+%Measured wall-clock times are reported separately in Section~V-E.
+
+
+
+
+对于分类任务，我们报告最终和最佳准确率；对于 SAMSum，报告 ROUGE-L，不将两种指标混合求平均。
+
+我们将 \method{} 与代表性基线比较，包括同构 LoRA 训练（FedAvg-LoRA）\cite{mcmahan2017communication,hu2022lora}、均匀矩阵分配（Uniform）、逐层分配（Fed-HeLLo）\cite{zhang2025fedhello}、层组启发式分配（MS）、异构秩分配（LEGEND \cite{liu2025legend} 和 HETLoRA-style \cite{cho2024hetlora}），以及量化和秩的联合分配（FAH-QLoRA-style）\cite{gao2025fah}。这些基线代表不同的适配粒度和资源分配策略，可与本文客户端感知的矩阵调度进行全面对比。为保证公平，所有方法使用相同的主干模型、数据划分、通信轮次、本地训练设置和评估协议。
+
+
+\subsection{任务性能与资源效率}
+图~\ref{fig:matrix} 比较 14 种评估设置下观察到的最佳任务指标。如图~\ref{fig:matrix} 所示，在覆盖 IID 与异构数据划分的全部 CIFAR100、GLUE 和 SAMSum 设置中，\method{} 始终排名第一。与异构秩和量化基线相比，\method{} 也取得显著更高的峰值性能。例如，在 MNLI IID 中，HETLoRA-style 和 FAH-QLoRA-style 分别达到 $0.796$ 和 $0.808$，而 \method{} 达到 $0.880$。在 CIFAR100 IID 中，三者相应的准确率分别为 $0.806$、$0.810$ 和 $0.900$，展示了完整框架在所报告评估协议下的性能。
+
+图~\ref{fig:budget-curves} 中的预算--质量轨迹，刻画了累计矩阵等价成本增加时获得的性能。结合表~\ref{tab:time-to-quality} 中匹配目标的对比，它们量化了完整框架的资源权衡。
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=.92\textwidth]{figures/fig4_budget_curves.pdf}
+  \caption{11 种分类场景的预算--质量轨迹；突出显示 \method{}。}
+  \label{fig:budget-curves}
+\end{figure*}
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=.92\textwidth]{figures/fig5_time_curves.pdf}
+  \caption{全部 11 种分类场景的模型估计时间--质量轨迹，使用与图~\ref{fig:budget-curves} 相同的解析式客户端画像。}
+  \label{fig:time-curves}
+\end{figure*}
+
+图~\ref{fig:time-curves} 报告在相同解析式客户端资源画像下，以累计模型估计时延为横轴的对应轨迹。表~\ref{tab:time-to-quality} 中的匹配目标结果概括了模型估计时间节省；这些数值不同于端到端实测运行时间。
+
+我们还比较达到分类任务峰值准确率所需的资源。表~\ref{tab:time-to-quality} 报告 \method{} 相对于达到相同目标时资源消耗最少的基线，在累计成本和模型估计时间方面的节省（$\Delta\overline C$ 和 $\Delta T$）。在全部 $11$ 种分类场景中，\method{} 使用的资源更少，累计预算和模型估计经过时间的中位节省分别为 $41.3\%$ 与 $42.3\%$，表明它在多种工作负载下持续具有更高的资源效率。
+
+\begin{table}[!t]
+\centering
+\caption{达到各最强基线的峰值准确率所需的资源；正的节省率有利于 \method{}。}
+\label{tab:time-to-quality}
+\setlength{\tabcolsep}{2.2pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+场景 & 参照方法 & 目标值 & $\Delta\overline C$ (\%) & $\Delta T$ (\%) \\
+\midrule
+CIFAR / Non-IID 0.1 & FAH-style & .746 & +53.9 & +59.4 \\
+CIFAR / Non-IID 1.0 & Uniform & .882 & +42.9 & +42.4 \\
+CIFAR / IID & Uniform & .886 & +54.4 & +48.3 \\
+MNLI / Non-IID 1.0 & LEGEND & .854 & +5.6 & +27.7 \\
+MNLI / IID & MS & .840 & +33.2 & +42.3 \\
+QNLI / Non-IID 1.0 & FedAvg & .762 & +0.7 & +3.2 \\
+QNLI / IID & FedAvg & .758 & +17.4 & +3.2 \\
+QQP / Non-IID 1.0 & LEGEND & .862 & +14.9 & +21.7 \\
+QQP / IID & LEGEND & .868 & +41.3 & +44.2 \\
+SST-2 / Non-IID 1.0 & FedAvg & .902 & +44.4 & +45.2 \\
+SST-2 / IID & HET-style & .930 & +47.8 & +38.5 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsection{评分可靠性}\label{sec:fm-score-study}
+我们考察画像得到的配置效用是否与短期本地改进相关。对于每个选定的客户端及检查点，候选配置具有相同的秩、矩阵等价预算和训练长度，且同时包含由评分引导及随机生成的可行子集。每个配置都从同一个检查点初始化，并以其自身训练前的验证损失减去训练后的验证损失，衡量在留出的本地样本上的改进。先分别为每个客户端--检查点组合计算 Spearman 相关系数，再进行汇总。原始评分与深度校准评分使用同一批配置结果进行评估。
+\FMtodo{填入经核实的 A 实验协议：划分、检查点轮次、客户端、配置数、步数、验证集划分和种子。}
+\FMtodo{填入 A 实验相关性表或图及数值发现，并报告汇总单位和不确定性。}
+
+\subsection{客户端感知矩阵选择的消融}\label{sec:fm-ablations}
+我们使用同一训练流程的受控变体，分别考察评分来源、选择粒度和深度先验。Server-Proxy 用独立服务器代理集计算的评分替代客户端特定评分。Layer-Level 保留本地评估，但将同一个 Transformer 块内的候选矩阵绑定在一起。No-Depth 仅移除深度校准。完整方法作为参照。所有变体共享预先确定的数据划分、候选客户端协议、优化器设置、秩、资源上限和训练轮数；选中的参与客户端与矩阵子集可以因分配结果而不同。
+\FMtodo{填入经核实的 B 实验元数据、最终与最佳准确率的均值/标准差，以及实际消耗的矩阵等价预算。}
+
+相对于 Server-Proxy、Layer-Level 和 No-Depth，完整方法的最终准确率分别变化 \FMtodo{三个有符号的百分点差值}；相应的运行间变化见表~\FMtodo{标签}。实际消耗的预算为 \FMtodo{数值}。这些比较在所评估设置中区分评分来源、矩阵级选择和校准各自的影响。
+
+\FloatBarrier
+\section{结论}\label{Sec.conclusion}
+FedMATRIX-LoRA 研究资源受限联邦微调中的客户端感知目标矩阵选择。本地画像将当前适配器与每个客户端的数据联系起来，而资源可行的分配则在客户端之间协调由此产生的偏好。按矩阵聚合支持相应的异构更新模式。所报告实验展示了完整框架的性能与资源权衡；条件性分析将其平均驻点性与有效更新偏差及矩阵覆盖联系起来。
+
+\appendices
+\section{按矩阵聚合的证明}
+\label{app:fm-convergence}
+\begin{proof}[定理~\ref{thm:fm-stationarity} 的证明]
+以 $\mathcal H_k$ 为条件，令 $a=P^k\nabla F(\theta^k)$，且
+$\bar v=\mathbb E[v^k\mid\mathcal H_k]=a+b^k$。
+由于更新仅作用于 $P^k$ 所选的参数块，光滑性给出
+\begin{align}
+ \mathbb E[F(\theta^{k+1})\mid\mathcal H_k]
+ \le{}&F(\theta^k)-\gamma\langle a,\bar v\rangle\\
+ &+\frac{\beta\gamma^2}{2}
+ \left(\|\bar v\|^2+\mathbb E[\|\xi^k\|^2\mid\mathcal H_k]\right).\nonumber
+\end{align}
+利用 $2\langle a,\bar v\rangle=\|a\|^2+\|\bar v\|^2-\|b^k\|^2$，并由
+$\gamma\le1/\beta$ 舍去非正项
+$-\gamma(1-\beta\gamma)\|\bar v\|^2/2$。取全期望可得
+\begin{align}
+ \mathbb E F(\theta^{k+1})\le{}&\mathbb E F(\theta^k)
+ -\frac\gamma2\mathbb E\|P^k\nabla F(\theta^k)\|^2\\
+ &+\frac\gamma2B_{\mathrm{upd}}^2
+ +\frac{\beta\gamma^2}{2}S_{\mathrm{upd}}^2.\nonumber
+\end{align}
+对 $k$ 求和后，损失项望远镜相消。由 $F$ 的下界得到
+\begin{equation}
+ \frac1K\sum_k\mathbb E\|P^k\nabla F(\theta^k)\|^2
+ \le\frac{2D_0}{\gamma K}+B_{\mathrm{upd}}^2+\beta\gamma S_{\mathrm{upd}}^2.
+\end{equation}
+再应用覆盖条件，并除以 $\alpha_{\mathrm{cov}}$。
+\end{proof}
+
+\begin{proof}[引理~\ref{lem:fm-selection-bias} 的证明]
+令 $d_i=g_{i,j}-g_j$，$w_i=\mathbf1\{i\in\mathcal U_j\}/n_j$。
+由于 $\sum_i d_i=0$，选择偏差等于 $\sum_i(w_i-1/N)d_i$。
+Cauchy--Schwarz 不等式给出
+\begin{align}
+ \left\|\sum_i(w_i-1/N)d_i\right\|^2
+ &\le\sum_i(w_i-1/N)^2\sum_i\|d_i\|^2\\
+ &=(1/n_j-1/N)N\zeta_j^2,
+\end{align}
+即所需界。对于完整的有效偏差，令其余本地更新差异为 $r=b-s$；当没有客户端更新某参数块时，令相应的选择偏差块为零。于是 $\|b\|^2\le2\|s\|^2+2\|r\|^2$。后一项包含本地漂移、优化器效应和任何本地模型不匹配；仅凭选择偏差引理无法约束它。
+\end{proof}
+
+
+\clearpage
+\begin{thebibliography}{99}
+\bibitem{zhang2022opt}
+S. Zhang \emph{et al.},
+``OPT: Open pre-trained transformer language models,''
+\emph{arXiv preprint arXiv:2205.01068}, 2022.
+
+\bibitem{dosovitskiy2021vit}
+A. Dosovitskiy \emph{et al.},
+``An image is worth 16x16 words: Transformers for image recognition at scale,''
+in \emph{Proceedings of the International Conference on Learning Representations (ICLR)}, 2021.
+
+\bibitem{mcmahan2017communication}
+B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. A. y Arcas,
+``Communication-efficient learning of deep networks from decentralized data,''
+in \emph{Proceedings of the 20th International Conference on Artificial Intelligence and Statistics (AISTATS)}, 2017, pp. 1273--1282.
+
+\bibitem{kairouz2021advances}
+P. Kairouz \emph{et al.},
+``Advances and open problems in federated learning,''
+\emph{Foundations and Trends in Machine Learning}, vol. 14, nos. 1--2, pp. 1--210, 2021,
+doi: 10.1561/2200000083.
+
+\bibitem{hu2022lora}
+E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen,
+``LoRA: Low-rank adaptation of large language models,''
+in \emph{Proceedings of the International Conference on Learning Representations (ICLR)}, 2022.
+
+\bibitem{cho2024hetlora}
+Y. J. Cho, L. Liu, Z. Xu, A. Fahrezi, and G. Joshi,
+``Heterogeneous LoRA for federated fine-tuning of on-device foundation models,''
+in \emph{Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing}, 2024, pp. 12903--12913,
+doi: 10.18653/v1/2024.emnlp-main.717.
+
+\bibitem{gao2025fah}
+Z. Gao, Z. Zhang, Y. Guo, and Y. Gong,
+``Federated adaptive fine-tuning of large language models with heterogeneous quantization and LoRA,''
+in \emph{Proceedings of IEEE Conference on Computer Communications (INFOCOM)}, 2025, pp. 1--10,
+doi: 10.1109/INFOCOM55648.2025.11044641.
+
+\bibitem{zhang2025fedhello}
+Z. Zhang, P. Liu, J. Xu, and R. Hu,
+``Fed-HeLLo: Efficient federated foundation model fine-tuning with heterogeneous LoRA allocation,''
+\emph{IEEE Transactions on Neural Networks and Learning Systems}, vol. 36, no. 10, pp. 17556--17569, 2025,
+doi: 10.1109/TNNLS.2025.3580495.
+
+\bibitem{li2021moon}
+Q. Li, B. He, and D. Song,
+``Model-contrastive federated learning,''
+in \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2021, pp. 10713--10722,
+doi: 10.1109/CVPR46437.2021.01057.
+
+\bibitem{dettmers2023qlora}
+T. Dettmers, A. Pagnoni, A. Holtzman, and L. Zettlemoyer,
+``QLoRA: Efficient finetuning of quantized LLMs,''
+in \emph{Advances in Neural Information Processing Systems}, vol. 36, 2023, pp. 10088--10115.
+
+\bibitem{houlsby2019adapters}
+N. Houlsby, A. Giurgiu, S. Jastrzebski, B. Morrone, Q. de Laroussilhe, A. Gesmundo, M. Attariyan, and S. Gelly,
+``Parameter-efficient transfer learning for NLP,''
+in \emph{Proceedings of the 36th International Conference on Machine Learning}, vol. 97, 2019, pp. 2790--2799.
+
+\bibitem{li2021prefix}
+X. L. Li and P. Liang,
+``Prefix-tuning: Optimizing continuous prompts for generation,''
+in \emph{Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers)}, 2021, pp. 4582--4597,
+doi: 10.18653/v1/2021.acl-long.353.
+
+\bibitem{zhang2023fedpetuning}
+Z. Zhang, Y. Yang, Y. Dai, Q. Wang, Y. Yu, L. Qu, and Z. Xu,
+``FedPETuning: When federated learning meets the parameter-efficient tuning methods of pre-trained language models,''
+in \emph{Findings of the Association for Computational Linguistics: ACL 2023}, 2023, pp. 9963--9977,
+doi: 10.18653/v1/2023.findings-acl.632.
+
+\bibitem{chen2022fedtune}
+J. Chen, W. Xu, S. Guo, J. Wang, J. Zhang, and H. Wang,
+``FedTune: A deep dive into efficient federated fine-tuning with pre-trained transformers,''
+\emph{arXiv preprint arXiv:2211.08025}, 2022.
+
+\bibitem{che2023fedpeptao}
+T. Che, J. Liu, Y. Zhou, J. Ren, J. Zhou, V. Sheng, H. Dai, and D. Dou,
+``Federated learning of large language models with parameter-efficient prompt tuning and adaptive optimization,''
+in \emph{Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing}, 2023, pp. 7871--7888,
+doi: 10.18653/v1/2023.emnlp-main.488.
+
+\bibitem{singhal2025fedex}
+R. Singhal, K. Ponkshe, and P. Vepakomma,
+``FedEx-LoRA: Exact aggregation for federated and efficient fine-tuning of large language models,''
+in \emph{Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, 2025, pp. 1316--1336,
+doi: 10.18653/v1/2025.acl-long.67.
+
+\bibitem{bian2025lorafair}
+J. Bian, L. Wang, L. Zhang, and J. Xu,
+``LoRA-FAIR: Federated LoRA fine-tuning with aggregation and initialization refinement,''
+in \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)}, 2025, pp. 3737--3746.
+
+\bibitem{li2025telora}
+Z. Li, B. Xu, X. Shu, J. Zhang, Y. Yao, G.-S. Xie, and J. Tang,
+``Tensor-aggregated LoRA in federated fine-tuning,''
+in \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)}, 2025, pp. 1058--1067.
+
+\bibitem{wang2026iflora}
+H. Wang, X. Wang, Y. Li, J. Chen, J. Zhang, N. Yan, K. He, and W. Wang,
+``Federated LoRA fine-tuning with pipelined error-mitigated aggregation and matrix-wise freezing,''
+in \emph{Findings of the Association for Computational Linguistics: ACL 2026}, 2026, pp. 5749--5762,
+doi: 10.18653/v1/2026.findings-acl.284.
+
+\bibitem{bai2024flexlora}
+J. Bai, D. Chen, B. Qian, L. Yao, and Y. Li,
+``Federated fine-tuning of large language models under heterogeneous tasks and client resources,''
+in \emph{Advances in Neural Information Processing Systems}, vol. 37, 2024, pp. 14457--14483,
+doi: 10.52202/079017-0461.
+
+\bibitem{koo2024loraa2}
+J. Koo, M. Jang, and J. Ok,
+``Towards robust and efficient federated low-rank adaptation with heterogeneous clients,''
+in \emph{Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, 2025, pp. 416--429,
+doi: 10.18653/v1/2025.acl-long.19.
+
+\bibitem{huang2026gmfl}
+X. Huang, Y. Hu, Y.-J. Gong, and X. Zhang,
+``GMFL: Efficient global masking for federated LLM fine-tuning,''
+in \emph{Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, 2026, pp. 25293--25312,
+doi: 10.18653/v1/2026.acl-long.1160.
+
+\bibitem{ban2026fedalora}
+H. Ban and K. Ji,
+``Rethinking parameter sharing for LLM fine-tuning with multiple LoRAs,''
+in \emph{Findings of the Association for Computational Linguistics: ACL 2026}, 2026, pp. 12843--12863,
+doi: 10.18653/v1/2026.findings-acl.625.
+
+\bibitem{diao2021heterofl}
+E. Diao, J. Ding, and V. Tarokh,
+``HeteroFL: Computation and communication efficient federated learning for heterogeneous clients,''
+in \emph{Proceedings of the International Conference on Learning Representations (ICLR)}, 2021.
+
+\bibitem{alam2022fedrolex}
+S. Alam, L. Liu, M. Yan, and M. Zhang,
+``FedRolex: Model-heterogeneous federated learning with rolling sub-model extraction,''
+in \emph{Advances in Neural Information Processing Systems}, vol. 35, 2022, pp. 29677--29690.
+
+\bibitem{lai2021oort}
+F. Lai, X. Zhu, H. V. Madhyastha, and M. Chowdhury,
+``Oort: Efficient federated learning via guided participant selection,''
+in \emph{Proceedings of the 15th USENIX Symposium on Operating Systems Design and Implementation (OSDI)}, 2021, pp. 19--35.
+
+\bibitem{shin2022fedbalancer}
+J. Shin, Y. Li, Y. Liu, and S.-J. Lee,
+``FedBalancer: Data and pace control for efficient federated learning on heterogeneous clients,''
+in \emph{Proceedings of the 20th Annual International Conference on Mobile Systems, Applications and Services (MobiSys)}, 2022, pp. 436--449,
+doi: 10.1145/3498361.3538917.
+
+\bibitem{li2022pyramidfl}
+C. Li, X. Zeng, M. Zhang, and Z. Cao,
+``PyramidFL: A fine-grained client selection framework for efficient federated learning,''
+in \emph{Proceedings of the 28th Annual International Conference on Mobile Computing and Networking (MobiCom)}, 2022, pp. 158--171,
+doi: 10.1145/3495243.3517017.
+
+\bibitem{kim2021autofl}
+Y. G. Kim and C.-J. Wu,
+``AutoFL: Enabling heterogeneity-aware energy efficient federated learning,''
+in \emph{Proceedings of the 54th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)}, 2021, pp. 183--198,
+doi: 10.1145/3466752.3480129.
+
+\bibitem{luo2021costeffective}
+B. Luo, X. Li, S. Wang, J. Huang, and L. Tassiulas,
+``Cost-effective federated learning in mobile edge networks,''
+\emph{IEEE Journal on Selected Areas in Communications}, vol. 39, no. 12, pp. 3606--3621, 2021,
+doi: 10.1109/JSAC.2021.3118436.
+
+\bibitem{kirkpatrick2017ewc}
+J. Kirkpatrick \emph{et al.},
+``Overcoming catastrophic forgetting in neural networks,''
+\emph{Proceedings of the National Academy of Sciences of the United States of America}, vol. 114, no. 13, pp. 3521--3526, 2017,
+doi: 10.1073/pnas.1611835114.
+
+\bibitem{liu2025legend}
+J. Liu, Y. Liao, H. Xu, Y. Xu, J. Liu, and C. Qian,
+``Adaptive parameter-efficient federated fine-tuning on heterogeneous devices,''
+\emph{IEEE Transactions on Mobile Computing}, vol. 24, no. 11, pp. 12533--12549, 2025,
+doi: 10.1109/TMC.2025.3586644.
+
+\bibitem{krizhevsky2009cifar}
+A. Krizhevsky,
+``Learning multiple layers of features from tiny images,''
+Department of Computer Science, University of Toronto, Toronto, ON, Canada, Technical Report, 2009.
+
+\bibitem{wang2019glue}
+A. Wang, A. Singh, J. Michael, F. Hill, O. Levy, and S. R. Bowman,
+``GLUE: A multi-task benchmark and analysis platform for natural language understanding,''
+in \emph{Proceedings of the International Conference on Learning Representations (ICLR)}, 2019.
+
+\bibitem{gliwa2019samsum}
+B. Gliwa, I. Mochol, M. Biesek, and A. Wawer,
+``SAMSum corpus: A human-annotated dialogue dataset for abstractive summarization,''
+in \emph{Proceedings of the 2nd Workshop on New Frontiers in Summarization}, 2019, pp. 70--79,
+doi: 10.18653/v1/D19-5409.
+
+\bibitem{he2021deberta}
+P. He, X. Liu, J. Gao, and W. Chen,
+``DeBERTa: Decoding-enhanced BERT with disentangled attention,''
+in \emph{Proceedings of the International Conference on Learning Representations (ICLR)}, 2021.
+
+\bibitem{liu2019roberta}
+Y. Liu \emph{et al.},
+``RoBERTa: A robustly optimized BERT pretraining approach,''
+\emph{arXiv preprint arXiv:1907.11692}, 2019.
+
+\bibitem{fm_adalora2023}
+Q. Zhang, M. Chen, A. Bukharin, N. Karampatziakis, P. He, Y. Cheng, W. Chen, and T. Zhao,
+``AdaLoRA: Adaptive budget allocation for parameter-efficient fine-tuning,''
+\emph{arXiv preprint arXiv:2303.10512}, version 2, 2023.
+
+\bibitem{fm_fish2021}
+Y.-L. Sung, V. Nair, and C. Raffel,
+``Training neural networks with fixed sparse masks,''
+in \emph{Advances in Neural Information Processing Systems}, vol. 34, 2021.
+
+\bibitem{fm_fedpilot2025}
+Z. Zhang, R. Hu, P. Liu, and J. Xu,
+``Fed-pilot: Optimizing LoRA allocation for efficient federated fine-tuning with heterogeneous clients,''
+\emph{arXiv preprint arXiv:2410.10200}, version 2, 2025.
+\end{thebibliography}
+
+\end{document}
