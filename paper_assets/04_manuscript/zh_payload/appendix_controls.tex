@@ -1,0 +1,9 @@
+\section{完整的受控研究结果}
+\label{app:fm-p2-details}
+表~\ref{tab:fm-p2-complete} 列出参数预算匹配的粒度研究中全部“划分--检查点--评分来源”条件。每个数值先在种子内对五个客户端的配对差值求平均，再报告三个种子的均值和样本标准差。初始化与 100 步预热检查点被明确区分。这些是损失差值，不是准确率百分点。
+\input{generated/fm_p2_complete_table_zh.tex}
+
+\section{评分来源对照}
+\label{app:fm-source-control}
+原有的评分来源对照单独于粒度动机实验汇总。Local 评估各客户端自己的数据；Local-Mean 对五个客户端的原始评分向量求平均；Proxy 对五个互不重叠的服务器代理批次求平均。Local 在每个客户端使用 16 个样本，Proxy 总计使用 80 个样本。它们使用相同的校准、固定矩阵数量、训练长度和留出评估协议。表~\ref{tab:fm-source-control} 报告与评分研究使用相同随机状态修复后，Local 减去各对照方法的损失下降量差值。正负差值均予保留。主要动机来自每种评分来源内部的矩阵--层比较；本表刻画评分来源之间的互补对比。
+\input{generated/fm_p_corrected_table_zh.tex}

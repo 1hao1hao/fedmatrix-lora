@@ -1,0 +1,24 @@
+\newcommand{\FMAdepthMin}{0.657}
+\newcommand{\FMAdepthMax}{0.876}
+\newcommand{\FMApositive}{90}
+\newcommand{\FMAtotal}{90}
+\newcommand{\FMAassociationSentence}{这些设置级的正相关支持在本受控协议中使用画像效用为配置确定优先级。}
+\begin{table}[t]
+\centering
+\caption{客户端内部的配置排序可靠性。数值为先对客户端求平均、再跨三个种子计算的 Spearman 系数均值 $\pm$ 样本标准差。预热表示共同的 100 步检查点。}
+\label{tab:fm-score-reliability}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}llcc@{}}
+\toprule
+数据划分 & 状态 & 原始评分 & 校准评分 \\
+\midrule
+IID & 初始化 & $0.688\pm0.114$ & $0.746\pm0.067$ \\
+IID & 预热 & $0.595\pm0.094$ & $0.657\pm0.070$ \\
+Dir. $1.0$ & 初始化 & $0.792\pm0.012$ & $0.841\pm0.042$ \\
+Dir. $1.0$ & 预热 & $0.556\pm0.141$ & $0.664\pm0.136$ \\
+Dir. $0.1$ & 初始化 & $0.885\pm0.028$ & $0.772\pm0.028$ \\
+Dir. $0.1$ & 预热 & $0.801\pm0.023$ & $0.876\pm0.036$ \\
+\bottomrule
+\end{tabular}
+\end{table}
