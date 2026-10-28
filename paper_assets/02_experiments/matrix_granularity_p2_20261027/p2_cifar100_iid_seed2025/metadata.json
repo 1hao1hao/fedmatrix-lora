@@ -1,0 +1,23 @@
+{
+  "run_id": "p2_cifar100_iid_seed2025",
+  "dataset": "cifar100",
+  "method": [
+    "Local-Matrix",
+    "Local-Layer",
+    "Proxy-Matrix",
+    "Proxy-Layer"
+  ],
+  "seed": 2025,
+  "distribution": "iid",
+  "metric": "validation_loss_reduction",
+  "config_path": "scripts/run_matrix_granularity_p2.py",
+  "raw_result_path": "paper_assets/02_experiments/matrix_granularity_p2_20261027/p2_cifar100_iid_seed2025/masks.csv",
+  "original_p_root": "paper_assets/02_experiments/matrix_score_20261025/full/cifar100_iid_seed2025",
+  "rank": 8,
+  "matrix_count": 12,
+  "train_steps": 20,
+  "optimizer": "AdamW",
+  "learning_rate": 0.001,
+  "model_construction": "full_adapters_forward_unselected_frozen_classifier_trainable",
+  "same_source_score_rule": "raw * original_P_depth_factor / max(raw * factor)"
+}
