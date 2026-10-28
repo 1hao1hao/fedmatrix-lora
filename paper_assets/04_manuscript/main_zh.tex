@@ -75,12 +75,12 @@ Transformer 块包含查询、键、值和前馈变换等不同的目标投影�
 
 图~\ref{fig:fm-motivation} 报告矩阵级减去层级的留出验证损失下降量差值。全部 12 个“划分--检查点--评分来源”设置的均值均为正；36 个种子内配对均值中有 35 个为正，每个种子内先对五个客户端求平均。本地和服务器代理重要性评分下均观察到这种改进。这一观察支持独立目标选择作为超越完整层分配的有用适配维度，而不是将收益归因于某一种评分来源。测得的结果是在固定参数预算下的短期损失下降。
 
-\begin{figure*}[!t]
+\begin{figure}[!t]
   \centering
-  \includegraphics[width=.98\textwidth]{figures/fig1_p2_granularity.pdf}
-  \caption{CIFAR100/ViT-base 上矩阵级选择相对于完整层分配的配对短期改进。纵轴为 20 步后留出验证损失下降量的矩阵级减层级差值；正值表示矩阵级选择更优。两类配置均包含 12 个秩为 8 的目标，且每组对比使用相同评分来源。在 Local 和 Proxy 评分下分别评估初始化及独立预热后的检查点。均值先在每个种子内对五个客户端求平均；误差棒表示三个种子间的样本标准差。各面板使用不同的纵轴刻度。}
+  \includegraphics[width=.95\columnwidth]{figures/fig1_p2_granularity_repaired.pdf}
+  \caption{矩阵级相对层级选择的验证损失下降增益。在固定协议下，正值表示矩阵级选择更优；误差棒表示种子间标准差。}
   \label{fig:fm-motivation}
-\end{figure*}
+\end{figure}
 
 利用这种灵活性，需要在投入训练预算之前评估候选更新。基于梯度和 Fisher 的准则提供了确定可训练参数及 LoRA 层优先级的已有方法~\cite{fm_fish2021,zhang2025fedhello}。这些优先级同时依赖当前模型及评估其损失所用的数据。在联邦系统中，每个客户端已持有定义其本地目标的数据。评估该目标可以提供客户端相关的判断，而不要求服务器另持有画像数据集。Fed-pilot 也将本地及汇总的重要性信息纳入 LoRA 分配~\cite{fm_fedpilot2025}；本文的重点是在块内开放单独的投影选择，并在耦合资源约束下协调这些选择。本地画像是评估机制，动机实验则隔离选择粒度的价值。
 
@@ -243,8 +243,8 @@ FedMATRIX-LoRA 通过客户端相关评估与资源可行分配实现重要性�
 
 \begin{figure*}[!t]
   \centering
-  \includegraphics[width=.98\textwidth]{figures/fig2_method_overview_p2.pdf}
-  \caption{FedMATRIX-LoRA 工作流程。本地梯度画像指导独立的目标投影选择。客户端配置生成施加内存和时延约束；服务器在共享轮次预算下选择配置。客户端更新被分配的 LoRA 因子，按矩阵聚合得到下一轮全局适配器。图中的 Q/K/V 子集仅作示意，不代表实验中的实际选择。}
+  \includegraphics[width=.98\textwidth]{figures/fig2_method_overview_repaired.pdf}
+  \caption{FedMATRIX-LoRA 工作流程：客户端相关矩阵画像、本地可行配置生成、预算与时延感知的服务器协调，以及本地训练与按矩阵聚合。}
   \label{fig:overview}
 \end{figure*}
 
@@ -610,14 +610,14 @@ No-Depth & $90.47\pm0.61$ & $\mathbf{90.93}\pm0.42$ \\
 \end{tabular}
 \end{table}
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/fig6_ablation_budget.pdf}
-\caption{四种消融变体在完整累计预算轨迹上的三种子平均验证准确率。终点的运行间变化和各运行峰值指标见表~\ref{tab:fm-ablations}。横轴为矩阵等价训练成本，而非实测运行时间。}
+\includegraphics[width=.85\textwidth]{figures/fig6_ablation_accuracy_repaired.pdf}
+\caption{四种消融变体在三个种子上的最终与最佳验证准确率。误差棒表示标准差；所有变体消耗相同的累计矩阵预算。}
 \label{fig:fm-ablation-budget}
-\end{figure}
+\end{figure*}
 
-表~\ref{tab:fm-ablations} 同时报告最终与最佳准确率，图~\ref{fig:fm-ablation-budget} 展示完整预算轨迹。Full 的最终均值最高，分别比 Server-Proxy、Layer-Level 和 No-Depth 高 $0.13$、$0.53$ 和 $0.13$ 个百分点。在这一设置中，绑定完整层造成的最终均值变化最大，与短期粒度研究互为补充。这些差异相对于不同运行之间的变化幅度较小。本地评估和代理评估的观测均值接近，而 No-Depth 的最佳均值略高，为 $90.93\%$。因此，消融将目标粒度的贡献与评分来源和校准较小的终点影响区分开来，而不把完整框架在主基准上的收益归因于某一个组成部分。
+表~\ref{tab:fm-ablations} 同时报告最终与最佳准确率，图~\ref{fig:fm-ablation-budget} 展示其种子间变化。Full 的最终均值最高，分别比 Server-Proxy、Layer-Level 和 No-Depth 高 $0.13$、$0.53$ 和 $0.13$ 个百分点。在这一设置中，绑定完整层造成的最终均值变化最大，与短期粒度研究互为补充。这些差异相对于不同运行之间的变化幅度较小。本地评估和代理评估的观测均值接近，而 No-Depth 的最佳均值略高，为 $90.93\%$。因此，消融将目标粒度的贡献与评分来源和校准较小的终点影响区分开来，而不把完整框架在主基准上的收益归因于某一个组成部分。
 
 \FloatBarrier
 \section{结论}\label{Sec.conclusion}

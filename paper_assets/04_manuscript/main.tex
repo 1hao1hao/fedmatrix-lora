@@ -51,12 +51,12 @@ To examine this question, we compare independent matrix selection with whole-lay
 
 Figure~\ref{fig:fm-motivation} reports the matrix-level minus layer-level difference in held-out validation-loss reduction. The mean difference is positive in all 12 partition--checkpoint--source settings; 35 of the 36 within-seed paired means, each averaged over five clients, are positive. These improvements occur with both local and server-proxy importance scores. The observation supports independent target selection as a useful adaptation dimension beyond whole-layer allocation, rather than attributing its benefit to a particular scoring source. The measured outcome is short-term loss reduction at a fixed parameter budget.
 
-\begin{figure*}[!t]
+\begin{figure}[!t]
   \centering
-  \includegraphics[width=.98\textwidth]{figures/fig1_p2_granularity.pdf}
-  \caption{Paired short-term improvement from matrix-level selection over whole-layer allocation on CIFAR100/ViT-base. The vertical axis is the matrix-level minus layer-level difference in held-out validation-loss reduction after 20 steps; positive values favor matrix-level selection. Both configurations contain 12 rank-8 targets and use the same scoring source within each comparison. Initialization and independently warmed-up checkpoints are evaluated under Local and Proxy scoring. Means first average five clients within each seed; error bars show the sample standard deviation across three seeds. Panels use different vertical scales.}
+  \includegraphics[width=.95\columnwidth]{figures/fig1_p2_granularity_repaired.pdf}
+  \caption{Matrix-level minus layer-level validation-loss reduction. Positive values favor matrix-level selection under the fixed protocol; error bars show standard deviation across seeds.}
   \label{fig:fm-motivation}
-\end{figure*}
+\end{figure}
 
 Exploiting this flexibility requires an assessment of candidate updates before the training budget is committed. Gradient- and Fisher-based criteria offer established ways to prioritize trainable parameters and LoRA layers~\cite{fm_fish2021,zhang2025fedhello}. Such priorities depend on both the current model and the data used to evaluate its loss. In a federated system, each client already holds data defining its local objective. Evaluating that objective provides a client-conditioned assessment without requiring an additional server-held profiling dataset. Fed-pilot also incorporates local and aggregated importance information into LoRA allocation~\cite{fm_fedpilot2025}; our focus is to expose individual projection choices within blocks and coordinate these choices under coupled resource constraints. Local profiling is the assessment mechanism, while the motivating comparison isolates the value of selection granularity.
 
@@ -229,8 +229,8 @@ FedMATRIX-LoRA implements importance-guided matrix selection through client-cond
 
 \begin{figure*}[!t]
   \centering
-  \includegraphics[width=.98\textwidth]{figures/fig2_method_overview_p2.pdf}
-  \caption{FedMATRIX-LoRA workflow. Local gradient profiles inform independent target-projection choices. Client-side configuration generation applies memory and latency constraints, and server coordination selects configurations under the shared round budget. Clients update the assigned LoRA factors; matrix-wise aggregation produces the next global adapter. The Q/K/V subsets are schematic, not experimental selections.}
+  \includegraphics[width=.98\textwidth]{figures/fig2_method_overview_repaired.pdf}
+  \caption{FedMATRIX-LoRA workflow: client-conditioned profiling, local feasible configuration generation, budget- and latency-aware server coordination, and local training with matrix-wise aggregation.}
   \label{fig:overview}
 \end{figure*}
 
@@ -610,14 +610,14 @@ No-Depth & $90.47\pm0.61$ & $\mathbf{90.93}\pm0.42$ \\
 \end{tabular}
 \end{table}
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/fig6_ablation_budget.pdf}
-\caption{Three-seed mean validation Accuracy for all four ablation variants over their complete cumulative-budget trajectories. The endpoint variation and per-run peak metrics are reported in Table~\ref{tab:fm-ablations}. The horizontal axis is matrix-equivalent training cost, not measured runtime.}
+\includegraphics[width=.85\textwidth]{figures/fig6_ablation_accuracy_repaired.pdf}
+\caption{Final and best validation accuracy across three seeds for four ablation variants. Error bars show standard deviation; all variants consume the same cumulative matrix budget.}
 \label{fig:fm-ablation-budget}
-\end{figure}
+\end{figure*}
 
-Table~\ref{tab:fm-ablations} reports both final and best Accuracy, and Fig.~\ref{fig:fm-ablation-budget} gives the full budget trajectories. Full attains the highest final mean, exceeding Server-Proxy, Layer-Level, and No-Depth by $0.13$, $0.53$, and $0.13$ percentage points, respectively. The largest final-mean change in this setting occurs when whole-layer binding is imposed, complementing the short-horizon granularity study. The differences are modest relative to run-to-run variation. Local and proxy-based assessment produce close observed means, while No-Depth achieves the slightly higher best mean of $90.93\%$. The ablation thus distinguishes the target-granularity contribution from the smaller endpoint effects of scoring source and calibration, rather than attributing the complete framework's main-benchmark gains to any single component.
+Table~\ref{tab:fm-ablations} reports both final and best Accuracy, and Fig.~\ref{fig:fm-ablation-budget} visualizes their variation across seeds. Full attains the highest final mean, exceeding Server-Proxy, Layer-Level, and No-Depth by $0.13$, $0.53$, and $0.13$ percentage points, respectively. The largest final-mean change in this setting occurs when whole-layer binding is imposed, complementing the short-horizon granularity study. The differences are modest relative to run-to-run variation. Local and proxy-based assessment produce close observed means, while No-Depth achieves the slightly higher best mean of $90.93\%$. The ablation thus distinguishes the target-granularity contribution from the smaller endpoint effects of scoring source and calibration, rather than attributing the complete framework's main-benchmark gains to any single component.
 
 \FloatBarrier
 \section{Conclusion}\label{Sec.conclusion}
