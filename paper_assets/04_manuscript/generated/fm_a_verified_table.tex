@@ -1,0 +1,24 @@
+\newcommand{\FMAdepthMin}{0.657}
+\newcommand{\FMAdepthMax}{0.876}
+\newcommand{\FMApositive}{90}
+\newcommand{\FMAtotal}{90}
+\newcommand{\FMAassociationSentence}{The positive setting-level associations support using the profiled utility to prioritize configurations in this controlled protocol.}
+\begin{table}[t]
+\centering
+\caption{Within-client configuration-ranking reliability. Entries report the three-seed mean $\pm$ sample standard deviation of client-averaged Spearman coefficients. Warm-up denotes the shared 100-step checkpoint.}
+\label{tab:fm-score-reliability}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}llcc@{}}
+\toprule
+Partition & State & Raw & Calibrated \\
+\midrule
+IID & Initial & $0.688\pm0.114$ & $0.746\pm0.067$ \\
+IID & Warm-up & $0.595\pm0.094$ & $0.657\pm0.070$ \\
+Dir. $1.0$ & Initial & $0.792\pm0.012$ & $0.841\pm0.042$ \\
+Dir. $1.0$ & Warm-up & $0.556\pm0.141$ & $0.664\pm0.136$ \\
+Dir. $0.1$ & Initial & $0.885\pm0.028$ & $0.772\pm0.028$ \\
+Dir. $0.1$ & Warm-up & $0.801\pm0.023$ & $0.876\pm0.036$ \\
+\bottomrule
+\end{tabular}
+\end{table}

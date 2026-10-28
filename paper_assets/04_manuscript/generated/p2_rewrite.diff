@@ -1,0 +1,294 @@
+diff --git a/paper_assets/04_manuscript/main.tex b/paper_assets/04_manuscript/main.tex
+index e86de20..e244f78 100644
+--- a/paper_assets/04_manuscript/main.tex
++++ b/paper_assets/04_manuscript/main.tex
+@@ -1,3 +1,4 @@
++% FM_P2_FINAL_REWRITE_V4
+ \documentclass[10pt,conference,letterpaper]{IEEEtran}
+ 
+ \usepackage{amsmath,amssymb}
+@@ -31,7 +32,8 @@
+ \maketitle
+ 
+ \begin{abstract}
+-Federated fine-tuning must reconcile heterogeneous client data with limited training resources. For low-rank adaptation (LoRA), the allocation problem concerns not only adapter capacity but also which target matrices each client should update. This paper presents FedMATRIX-LoRA, a client-aware matrix-level adaptation framework for resource-constrained federated fine-tuning. Each client evaluates candidate matrices using a local mini-batch at the current global adapter and constructs feasible configurations from the resulting importance scores. The server coordinates client participation and matrix configurations under a shared training budget and a round-latency objective. Selected adapters are trained locally and aggregated matrix-wise. This design couples data-dependent adaptation preferences with resource feasibility without changing the LoRA parameterization. Experiments on image classification, language understanding, and dialogue summarization show improvements over the evaluated baselines in task metrics and in resource efficiency under the adopted analytical client profiles.
++Federated fine-tuning must allocate limited training resources across clients with heterogeneous data and device capabilities. For low-rank adaptation (LoRA), this requires deciding not only adapter capacity but also which target projections receive updates. Grouping projections into indivisible Transformer blocks restricts this placement decision. A controlled study at a matched parameter budget finds larger short-term validation-loss reductions with independent matrix selection than with whole-layer allocation in all 12 setting-level comparisons, using either local or server-proxy importance scores. Motivated by this observation, we present FedMATRIX-LoRA, a client-aware matrix-level adaptation framework. Clients estimate update priorities from local gradient profiles and construct resource-feasible matrix configurations; the server coordinates participation and configuration choice under a shared budget and latency objective. Matrix-wise aggregation combines the resulting heterogeneous updates. A conditional stationarity analysis characterizes the roles of update bias and matrix coverage. Experiments spanning image classification, language understanding, and dialogue summarization evaluate the complete framework, while controlled studies examine selection granularity, scoring reliability, and the contributions of individual components. The results support importance-guided matrix selection as a useful adaptation dimension under constrained training budgets.
++
+ \end{abstract}
+ 
+ \begin{IEEEkeywords}
+@@ -39,82 +41,53 @@ Federated fine-tuning, low-rank adaptation, client-aware matrix selection, resou
+ \end{IEEEkeywords}
+ 
+ \section{Introduction}
+-% I1: Why the federated adaptation problem arises.
+-Foundation models provide reusable representations, but their adaptation often depends on data held by different institutions or devices. Federated learning enables these data holders to optimize a shared model without pooling their raw examples~\cite{mcmahan2017communication,kairouz2021advances}. The scale of pretrained models, however, makes full-parameter updates expensive for clients with limited memory, computation, and communication capacity. Low-rank adaptation (LoRA) reduces the trainable parameter set by representing weight updates through compact factors while keeping the pretrained backbone fixed~\cite{hu2022lora}. Federated LoRA thus makes collaborative adaptation more accessible, but it leaves an allocation question: which parts of the adapter should each client train with its available resources?
+-
+-% I2: Explain the memory motivation without dismissing rank adaptation.
+-This question is not determined by adapter size alone. Training memory includes the frozen backbone, trainable parameters and their optimizer states, and intermediate activations required by backpropagation. Reducing rank shrinks the adapter-related state, but does not necessarily remove the backward computation needed to reach a trainable location. Fed-HeLLo identifies this distinction and reports limited total-memory savings from rank reduction when activations dominate~\cite{zhang2025fedhello}. Choosing trainable locations therefore complements rank adaptation: it changes both the parameters receiving updates and, under partial-adapter execution, the activation dependencies that must be retained. We study target selection at a fixed rank, separating this decision from the amount of capacity assigned within each selected adapter.
++Foundation models provide reusable representations, but adapting them to downstream applications often requires data held by different institutions or devices. Federated learning enables these data holders to optimize a shared model without pooling their raw examples~\cite{mcmahan2017communication,kairouz2021advances}. Full-parameter updates remain costly for clients with limited memory, computation, and communication capacity. Low-rank adaptation (LoRA) reduces this burden by representing updates through compact trainable factors while keeping the pretrained backbone fixed~\cite{hu2022lora}. Federated LoRA therefore makes collaborative adaptation more accessible, but still requires deciding which adapter parameters each client should update with its available resources.
+ 
+-% I3: Introduce matrices before asking the reader to reason about selection.
+-A Transformer block contains several target projections, such as Query, Key, Value, and feed-forward transformations. Each can receive a distinct LoRA update, so a block-level allocation couples choices that can instead be made separately. The LoRA placement study and AdaLoRA's adaptive rank allocation already establish that adaptation value varies across matrices and layers~\cite{hu2022lora,fm_adalora2023}. These findings motivate treating the adapter subset as a decision variable rather than selecting a common location pattern and changing only its size. At a fixed rank, matrix-level selection allows a client to retain some projections within a block without assigning training capacity to every candidate projection in that block.
++Adapter size alone does not determine training feasibility. Memory is also required for the frozen backbone, optimizer states, and intermediate activations retained for backpropagation. Reducing rank shrinks adapter-related state without necessarily shortening the backward path to a trainable location. Fed-HeLLo identifies this distinction and reports limited total-memory savings from rank reduction when activations dominate~\cite{zhang2025fedhello}. Selecting trainable locations thus complements rank adaptation: it changes where updates occur and, under partial-adapter execution, which activation dependencies must be retained. We study this placement decision at a fixed rank, separating target selection from capacity allocation within each selected adapter.
+ 
+-% I4: Explain importance and the role of the data distribution.
+-Selecting among these candidates requires an estimate of their value before committing a training budget. Importance scores provide such an estimate by measuring a parameter block's sensitivity to an adaptation objective. Gradient- and Fisher-based selection methods use information from the task loss to prioritize updates~\cite{fm_fish2021,zhang2025fedhello}. The data used for this assessment are consequential in federated learning: two clients can start from the same global adapter yet optimize different local objectives because their sample distributions differ. Accordingly, matrix importance should be understood as conditional on the model state and the data distribution, rather than as a fixed attribute of the pretrained architecture. This raises the question of whether a single importance vector adequately represents the adaptation priorities of heterogeneous clients.
++A Transformer block contains distinct target projections, including Query, Key, Value, and feed-forward transformations. Each projection can receive its own LoRA update. Existing placement studies and importance-aware rank allocation show that adaptation value need not be uniform across matrices or layers~\cite{hu2022lora,fm_adalora2023}. Layer-level allocation nevertheless binds candidate projections within a block into one decision. Under a limited budget, selecting a useful projection can therefore require allocating capacity to other projections in the same block, while excluding useful targets elsewhere. This motivates a more specific question than whether different locations matter: with the importance criterion and parameter budget held fixed, does relaxing whole-layer binding improve the configurations selected for adaptation?
+ 
+-% I5: Acknowledge existing client-aware work and state the specific focus.
+-Fed-HeLLo estimates layer importance on server-held proxy data and uses the resulting scores to guide client allocations~\cite{zhang2025fedhello}. A proxy distribution provides a shared reference, but may assign priorities different from those induced by an individual client's objective. Fed-pilot further incorporates local and globally aggregated importance information into memory-constrained LoRA allocation~\cite{fm_fedpilot2025}. Building on importance-guided adaptation, we investigate individual target-projection choices within each client and coordinate those choices under local memory and latency limits and a shared round budget. The resulting problem couples the source of importance information, the granularity of selection, and the feasibility of executing the selected updates.
++To examine this question, we compare independent matrix selection with whole-layer allocation on CIFAR100 using ViT-base. Matrix-level allocation selects 12 Q/K/V target matrices across the 12 Transformer blocks; layer-level allocation selects all three projections in four blocks. Both use rank eight and the same trainable parameter count. Within each scoring source, they maximize the same profiled utility subject to the same analytical resource limits. We evaluate local and server-proxy scores separately, using IID data and Dirichlet partitions with concentration parameters $1.0$ and $0.1$. Paired configurations start from the same adapter at initialization or after a shared warm-up and undergo 20 local training steps. Holding unselected adapters fixed in the forward model isolates the effect of the trainable subset. Section~\ref{sec:fm-granularity-study} details the protocol.
+ 
+-% I6: Protocol only. No empirical outcome is available for this block yet.
+-A controlled motivating comparison is designed to distinguish differences in matrix priorities from their consequences for local adaptation. On CIFAR100 with ViT-base, it contrasts Local, which assigns each client its own scores; Local-Mean, which averages client scores into one shared vector; and Server-Proxy, which evaluates a separate server-held proxy set. The comparison spans IID data and Dirichlet partitions with concentration parameters $1.0$ and $0.1$. It holds the score formula, starting adapter, selected-matrix count, rank, local training length, and feasibility checks fixed within each comparison. Selection disagreement is measured separately from the reduction in held-out local validation loss. Local-Mean isolates the effect of sharing the same locally computed evidence, whereas Server-Proxy examines a distinct scoring-data source. The two planned panels in Fig.~\ref{fig:fm-motivation} connect these questions without equating different selections with better selections.
+-\FMtodo{Experiment P results are pending. Insert the verified selection-disagreement and paired validation-loss findings, with uncertainty, before drawing an empirical conclusion.}
++Figure~\ref{fig:fm-motivation} reports the matrix-level minus layer-level difference in held-out validation-loss reduction. The mean difference is positive in all 12 partition--checkpoint--source settings; 35 of the 36 within-seed paired means, each averaged over five clients, are positive. These improvements occur with both local and server-proxy importance scores. The observation supports independent target selection as a useful adaptation dimension beyond whole-layer allocation, rather than attributing its benefit to a particular scoring source. The measured outcome is short-term loss reduction at a fixed parameter budget.
+ 
+-\begin{figure}[!t]
++\begin{figure*}[!t]
+   \centering
+-  \fbox{\parbox[c][1.2in][c]{.9\columnwidth}{\centering\FMtodo{Verified experiment P figure}}}
+-  \caption{Planned motivating comparison of scoring sources under data heterogeneity. (a) Jaccard distance between Local and Server-Proxy matrix selections. (b) Held-out local validation-loss reduction for Local, Local-Mean, and Server-Proxy at matched matrix counts, ranks, and training lengths. \FMtodo{Insert the verified P panels, seed set, aggregation unit, and uncertainty definition.}}
++  \includegraphics[width=.98\textwidth]{figures/fig1_p2_granularity.pdf}
++  \caption{Paired short-term improvement from matrix-level selection over whole-layer allocation on CIFAR100/ViT-base. The vertical axis is the matrix-level minus layer-level difference in held-out validation-loss reduction after 20 steps; positive values favor matrix-level selection. Both configurations contain 12 rank-8 targets and use the same scoring source within each comparison. Initialization and independently warmed-up checkpoints are evaluated under Local and Proxy scoring. Means first average five clients within each seed; error bars show the sample standard deviation across three seeds. Panels use different vertical scales.}
+   \label{fig:fm-motivation}
+-\end{figure}
++\end{figure*}
+ 
+-% I7: The two design requirements, not a list of solver achievements.
+-The methodological challenge has two parts. First, importance assessment must distinguish client-specific adaptation priorities at the current global model without requiring trial training of every candidate configuration. A low-cost gradient-based profile addresses this assessment problem. Second, those priorities must be translated into feasible allocations. A high-scoring subset can exceed a client's memory limit, and configurations that are feasible individually can jointly exceed the round budget or incur excessive synchronization latency. Thus, neither a shared importance ranking nor independent local selection alone specifies the desired training round. Client-conditioned assessment and resource-feasible coordination must be connected.
++Exploiting this flexibility requires an assessment of candidate updates before the training budget is committed. Gradient- and Fisher-based criteria offer established ways to prioritize trainable parameters and LoRA layers~\cite{fm_fish2021,zhang2025fedhello}. Such priorities depend on both the current model and the data used to evaluate its loss. In a federated system, each client already holds data defining its local objective. Evaluating that objective provides a client-conditioned assessment without requiring an additional server-held profiling dataset. Fed-pilot also incorporates local and aggregated importance information into LoRA allocation~\cite{fm_fedpilot2025}; our focus is to expose individual projection choices within blocks and coordinate these choices under coupled resource constraints. Local profiling is the assessment mechanism, while the motivating comparison isolates the value of selection granularity.
+ 
+-% I8: Explain the method through the two requirements.
+-We propose FedMATRIX-LoRA, a client-aware matrix-level adaptation framework for resource-constrained federated fine-tuning. During profiling refreshes, each client evaluates candidate LoRA factors on a local mini-batch at the current global adapter. The resulting scores define configuration priorities, while the resource model determines which configurations are feasible. Clients generate candidate configurations at different matrix-equivalent costs; the server coordinates participation and configuration choice under the shared budget and latency objective. Selected adapters are trained locally and aggregated matrix-wise to update a shared global adapter. In this design, local evidence determines preferred adaptation locations, and resource coordination determines which proposed updates can be executed together.
++A high-scoring subset, however, is useful only if it can be trained. Memory feasibility depends on the locations of selected targets as well as their number, and client computation and bandwidth determine whether the configuration meets a round deadline. Independently feasible choices can also exceed the shared round budget when executed together. The design therefore has two connected requirements: estimate update priorities at the target-matrix level, and translate those priorities into feasible client configurations that can be coordinated in a training round. A ranking alone does not resolve this second requirement.
+ 
+-\begin{figure*}[t]
+-  \centering
+-  \resizebox{.84\textwidth}{!}{%
+-    \setlength{\unitlength}{1pt}%
+-    \begin{picture}(1159.92,472.08)
+-      \put(0,0){\includegraphics[width=1159.92pt]{figures/fig2_method_overview.pdf}}
+-      \put(321,242){\color{white}\rule{145pt}{35pt}}
+-      \put(323,261){\makebox(0,0)[l]{\color[HTML]{17324D}\fontsize{12}{13}\selectfont\sffamily\bfseries Local gradient-squared}}
+-      \put(323,247){\makebox(0,0)[l]{\color[HTML]{17324D}\fontsize{11}{12}\selectfont\sffamily profiling + depth calibration}}
+-      \put(618,158){\color[HTML]{FFF0C9}\rule{55pt}{37pt}}
+-      \put(645,183){\makebox(0,0){\color[HTML]{5D4308}\fontsize{9}{10}\selectfont\sffamily\bfseries Budget-}}
+-      \put(645,172){\makebox(0,0){\color[HTML]{5D4308}\fontsize{9}{10}\selectfont\sffamily\bfseries constrained}}
+-      \put(645,161){\makebox(0,0){\color[HTML]{5D4308}\fontsize{9}{10}\selectfont\sffamily\bfseries allocation}}
+-    \end{picture}%
+-  }
+-  \caption{\method{} workflow. Client-conditioned profiling scores target matrices; position-dependent training-memory and client-latency constraints shape feasible configurations; configuration-level global coordination selects among them under the round budget.}
+-  \label{fig:overview}
+-\end{figure*}
++We address these requirements with FedMATRIX-LoRA, a client-aware matrix-level adaptation framework. During profiling refreshes, each client evaluates the LoRA factors of candidate projections on a local mini-batch at the current global adapter. The resulting scores guide configurations at different matrix-equivalent costs, subject to local memory and latency constraints. The server selects client configurations under the shared budget and synchronization-latency objective. Clients train the assigned factors, and matrix-wise aggregation updates the shared global adapter. Local evidence informs the preferred targets; resource-aware allocation determines which proposed updates can be executed together.
+ 
+ Our contributions are threefold:
+ \begin{itemize}
+-\item We formulate client-aware target-matrix selection for resource-constrained federated fine-tuning, making the trainable projection subset responsive to local data and device feasibility rather than specifying it solely through adapter capacity.
+-\item We develop FedMATRIX-LoRA, which connects local gradient-based profiling with feasible configuration generation and server coordination. The framework supports distinct projection choices within a Transformer block and across clients while maintaining a shared global adapter through matrix-wise aggregation.
+-\item We provide a conditional stationarity analysis that relates selective aggregation to effective-update bias and matrix coverage, and evaluate the complete framework on image classification, language understanding, and dialogue summarization under heterogeneous data and analytical resource profiles.
++\item We formulate importance-guided target-matrix selection for resource-constrained federated fine-tuning, allowing projections within a Transformer block to be selected independently. A matched-budget controlled study motivates this granularity using actual short-term adaptation gains under both local and server-proxy scoring.
++\item We develop FedMATRIX-LoRA to connect local matrix profiling with resource-feasible configuration generation, shared-budget coordination, and matrix-wise aggregation. Clients can update distinct target subsets while contributing to a common global adapter.
++\item We provide a conditional stationarity analysis of selective aggregation and evaluate the framework across image classification, language understanding, and dialogue summarization. Controlled scoring and ablation studies examine the mechanisms separately from the complete system's performance.
+ \end{itemize}
+ 
+-Section~\ref{Sec.relatedworks} positions the work relative to prior studies. Section~\ref{sec.model} presents the system model and problem formulation, and Section~\ref{Sec.alg} describes FedMATRIX-LoRA and its analysis. Section~\ref{Sec.evaluation} reports the evaluation, followed by the conclusion in Section~\ref{Sec.conclusion}.
+-
++Section~\ref{Sec.relatedworks} positions the work relative to prior studies. Section~\ref{sec.model} defines the system model and allocation problem. Section~\ref{Sec.alg} presents the framework and its analysis, and Section~\ref{Sec.evaluation} reports the evaluation. Section~\ref{Sec.conclusion} concludes the paper.
+ 
+ \section{Related Work}\label{Sec.relatedworks}
+-\noindent\textbf{Parameter-efficient and selective adaptation.}
+-Parameter-efficient fine-tuning changes either the representation of an update or the subset of parameters that is trained. LoRA represents updates through low-rank factors attached to pretrained matrices, while QLoRA combines a quantized frozen backbone with trainable low-rank adapters~\cite{hu2022lora,dettmers2023qlora}. These mechanisms reduce different components of the adaptation footprint. Target selection introduces a further choice: an available adapter need not be trained on every client in every round. The distinction is useful in heterogeneous systems, where a common candidate architecture can admit different feasible trainable subsets.
++\noindent\textbf{Parameter-efficient and importance-guided adaptation.}
++Parameter-efficient fine-tuning reduces the parameters updated when adapting a pretrained model. LoRA expresses updates through low-rank factors attached to selected weight matrices, while QLoRA combines a quantized frozen backbone with trainable adapters~\cite{hu2022lora,dettmers2023qlora}. These mechanisms address different components of the adaptation footprint. Selecting the target subset introduces a further decision about where the trainable capacity is placed, rather than only its size or storage precision.
+ 
+-Importance-aware methods provide a basis for making such choices. AdaLoRA assigns nonuniform rank budgets across weight matrices through importance-guided pruning of an SVD-style update parameterization~\cite{fm_adalora2023}. FISH constructs a sparse trainable-parameter mask from Fisher-based importance scores~\cite{fm_fish2021}. These methods demonstrate that uniform allocation is not the only way to organize a limited adaptation budget. FedMATRIX-LoRA applies importance-guided selection to a different decision: the fixed-rank target subset assigned to each federated client. Whereas within-matrix rank allocation controls adapter capacity, client-conditioned target selection determines the projections receiving that client's updates. Resource coordination then determines which client configurations can be executed together.
++Importance-aware adaptation has already established that a limited parameter budget need not be distributed uniformly. AdaLoRA assigns nonuniform rank budgets across weight matrices through importance-guided pruning of an SVD-style update parameterization~\cite{fm_adalora2023}. FISH selects a sparse trainable-parameter mask using Fisher-based scores~\cite{fm_fish2021}. FedMATRIX-LoRA builds on importance-guided selection at a different allocation level: it chooses fixed-rank target subsets for individual federated clients. Whereas importance-aware rank allocation controls capacity within weight updates, the proposed formulation coordinates independently selectable target projections under heterogeneous client and round-level constraints.
+ 
+-\noindent\textbf{Heterogeneous federated LoRA.}
+-HetLoRA supports heterogeneous client ranks and combines local rank self-pruning with server-side sparsity-weighted aggregation~\cite{cho2024hetlora}. FAH-QLoRA jointly considers quantization and LoRA rank in federated resource adaptation~\cite{gao2025fah}. These approaches establish the value of adapting capacity or numerical precision to client resources. As discussed by Fed-HeLLo, however, reducing rank primarily decreases optimizer-state memory in activation-dominated settings, motivating partial-layer training as a complementary allocation dimension~\cite{zhang2025fedhello}. LEGEND jointly configures tuning depth and rank distribution, explicitly connecting the location of trainable layers with resource use~\cite{liu2025legend}. Its combination of depth and rank illustrates that placement and capacity can jointly affect the resource--performance trade-off.
++\noindent\textbf{Heterogeneous federated LoRA allocation.}
++HetLoRA supports different client ranks through local rank self-pruning and sparsity-weighted aggregation, while FAH-QLoRA jointly considers quantization and LoRA rank~\cite{cho2024hetlora,gao2025fah}. These approaches adapt capacity or numerical precision to client resources. Fed-HeLLo identifies an additional memory concern: reducing rank primarily affects optimizer-related state in the activation-dominated settings it studies, motivating partial-layer training~\cite{zhang2025fedhello}. LEGEND jointly configures tuning depth and rank distribution, explicitly linking trainable locations to resource use~\cite{liu2025legend}. Target selection and rank allocation are consequently complementary dimensions, rather than mutually exclusive alternatives.
+ 
+-Fed-HeLLo further accounts for unequal layer importance through scores computed on server-held proxy data and geometric allocation strategies~\cite{zhang2025fedhello}. Its score-guided strategy converts a shared assessment into allocation probabilities; different clients can receive different masks even though the underlying importance evidence is shared. FedMATRIX-LoRA instead estimates importance on each client's data and exposes separate projection choices inside a block. This separates two aspects of heterogeneity: differences in client training capacity and differences in the data-dependent priorities used to allocate that capacity.
++Fed-HeLLo accounts for unequal layer importance through server-proxy scores and geometric allocation strategies~\cite{zhang2025fedhello}. Its score-guided strategy converts a shared assessment into allocation probabilities, so clients can receive different layer masks. FedMATRIX-LoRA instead permits separate choices among projections within a block and evaluates the scoring criterion on client data. The controlled comparison in Fig.~\ref{fig:fm-motivation} distinguishes the granularity question from the scoring-source question by applying both matrix-level and layer-level selection to each source. It compares allocation constraints within a common pipeline, not a full reproduction of Fed-HeLLo.
+ 
+-Fed-pilot is the closest importance-guided allocation counterpart. In its block-indexed formulation, local and cross-client, temporally aggregated information-gain scores guide memory-constrained LoRA allocation, and compensated aggregation addresses uneven updates~\cite{fm_fedpilot2025}. FedMATRIX-LoRA develops a different allocation formulation: independent target-projection indicators within blocks are coordinated across clients under memory limits, latency constraints, and a shared round budget. Local profiling is performed over the candidate target set at refresh rounds, and the resulting configurations are compared at the server. The formulation thereby connects within-block projection choices and client-specific importance with the feasibility of a jointly scheduled training round.
++Fed-pilot is a closely related importance-guided allocation method. Its block-indexed formulation combines local and aggregated gradient-based information-gain scores with memory-constrained allocation and compensated aggregation~\cite{fm_fedpilot2025}. FedMATRIX-LoRA exposes individual target-projection indicators within blocks and coordinates their configurations across clients under memory limits, latency constraints, and a shared round budget. The relevant distinction is the allocation decision and its coupled constraints, not local scoring or knapsack optimization alone.
+ 
+ \noindent\textbf{Aggregation and resource coordination.}
+-Aggregation and allocation address related but distinct parts of federated adaptation. FedEx-LoRA treats the mismatch introduced by aggregating low-rank factors, while LoRA-FAIR studies aggregation and initialization refinement~\cite{singhal2025fedex,bian2025lorafair}. These directions concern how local updates are combined. Resource-aware methods such as Oort, FedBalancer, and PyramidFL address participant selection or training-work coordination under heterogeneous conditions~\cite{lai2021oort,shin2022fedbalancer,li2022pyramidfl}. In FedMATRIX-LoRA, the server decision also includes the trainable target subset assigned to a participating client. Feasible configurations therefore connect local adaptation preferences to the round-level allocation problem, rather than treating client participation and the internal trainable subset as unrelated decisions. The matrix-wise analysis characterizes the update pattern induced by this selective execution.
++FedEx-LoRA addresses the mismatch associated with aggregating low-rank factors, and LoRA-FAIR refines aggregation and initialization~\cite{singhal2025fedex,bian2025lorafair}. These studies concern how local updates are combined. Oort, FedBalancer, and PyramidFL address participant selection or training-work coordination under heterogeneous conditions~\cite{lai2021oort,shin2022fedbalancer,li2022pyramidfl}. FedMATRIX-LoRA includes the trainable target subset in the configuration assigned to a participating client. Configuration generation connects local update priorities to resource feasibility, while server coordination determines which configurations can execute together. The matrix-wise convergence analysis characterizes the selective update pattern produced by this process.
+ 
+ \section{System Model and Problem Formulation}\label{sec.model}
+ 
+@@ -252,49 +225,53 @@ The formulation couples client-level feasibility with a shared round budget. We
+ 
+ \section{FedMATRIX-LoRA Design}\label{Sec.alg}
+ \subsection{Framework Overview}
+-FedMATRIX-LoRA links data-dependent matrix assessment to resource-feasible execution. As illustrated in Fig.~\ref{fig:overview}, clients profile candidate matrices at the current global adapter and construct configurations satisfying their local limits. The server coordinates these configurations under the round budget and latency objective. Clients then update the assigned adapters, and their results are aggregated matrix-wise. The scoring mechanism and the allocation procedure are described separately below.
++FedMATRIX-LoRA implements importance-guided matrix selection through client-conditioned assessment and resource-feasible allocation. Figure~\ref{fig:overview} separates these roles. Clients profile the current adapter on local data and form configurations of independently selectable targets. The server coordinates the configurations under the round budget and latency objective. Clients then update the assigned factors, and their contributions are aggregated matrix-wise into the next shared adapter. The following subsections specify the scoring rule, allocation procedure, training protocol, and conditional analysis.
++
++\begin{figure*}[!t]
++  \centering
++  \includegraphics[width=.98\textwidth]{figures/fig2_method_overview_p2.pdf}
++  \caption{FedMATRIX-LoRA workflow. Local gradient profiles inform independent target-projection choices. Client-side configuration generation applies memory and latency constraints, and server coordination selects configurations under the shared round budget. Clients update the assigned LoRA factors; matrix-wise aggregation produces the next global adapter. The Q/K/V subsets are schematic, not experimental selections.}
++  \label{fig:overview}
++\end{figure*}
+ 
+ \subsection{Client-Conditioned Matrix Profiling}\label{sec:fm-profiling}
+ \noindent\textbf{Client-conditioned assessment.}
+-Profiling supplies an importance estimate before a client's training configuration is selected. At a common global adapter, the local loss depends on the client's examples; its gradient therefore describes sensitivity to the parameters under that client's adaptation objective. A shared score vector summarizes a common reference objective, whereas separate local evaluations preserve differences among client objectives. We use this distinction to assign update priorities at the target-matrix level. The goal is to inform which LoRA factors a client should train, while the resource constraints in Section~\ref{sec:fm-allocation} determine which combinations can be executed.
++The motivating study isolates the value of allowing individual projections to be selected. To use that flexibility during federated training, the allocation procedure needs a priority score for each candidate target. At a common global adapter, a client's loss gradient reflects parameter sensitivity under its own examples. Local assessment therefore supplies priorities associated with that client's objective without requiring a server-held profiling dataset. The configuration generator combines these priorities with resource constraints rather than treating an isolated ranking as the final training decision.
+ 
+ \noindent\textbf{A single-pass gradient score.}
+-Gradient- and Fisher-based criteria have been used to select trainable parameters and LoRA layers~\cite{fm_fish2021,zhang2025fedhello}. We adopt a gradient-squared criterion because it can be evaluated for all candidate targets in one backward pass, without separately training each proposed configuration. During a refresh at round $k$, client $i$ attaches LoRA modules to the candidate projections, loads the current global adapter $\theta^k$, and evaluates the average loss on a local mini-batch $\mathcal B_i^k$. Let $\theta_j^k$ denote the LoRA factors associated with target matrix $j$. Its raw score is
+-
++Gradient- and Fisher-based criteria have been used to select trainable parameters and LoRA layers~\cite{fm_fish2021,zhang2025fedhello}. We use a gradient-squared criterion that evaluates all candidate targets in one backward pass, rather than trial-training individual configurations. During a refresh at round $k$, client $i$ attaches LoRA modules to the candidate projections, loads the current global adapter $\theta^k$, and evaluates the average loss on a local mini-batch $\mathcal B_i^k$. Let $\theta_j^k$ denote the LoRA factors associated with target matrix $j$. Its raw score is
+ \begin{equation}
+- g_{i,j}^k=
+- \sum_{p\in\theta_j^k}
+- \left(
+- \nabla_p
+- \mathcal L_i(\theta^k;\mathcal B_i^k)
+- \right)^2 .
++ g_{i,j}^k=\sum_{p\in\theta_j^k}
++ \left(\nabla_p\mathcal L_i(\theta^k;\mathcal B_i^k)\right)^2.
+  \label{eq:fim}
+ \end{equation}
+-The score measures the aggregate magnitude of the local batch-loss gradient over the adapter's trainable coordinates. Squaring makes contributions from different parameter coordinates nonnegative, and summation gives a block-level measure rather than an average sensitivity per parameter. For a fixed parameterization, a larger gradient norm indicates greater immediate loss sensitivity to a perturbation of that block, motivating its use as an update-priority signal. Because the calculation uses the gradient of a batch-averaged loss, we describe it as a Fisher-inspired proxy rather than an exact Fisher estimate. Its role is to rank candidate updates before local training, not to substitute for the observed task metric after training.
++The score aggregates the magnitude of the batch-loss gradient over the adapter's trainable coordinates. Squaring makes coordinate contributions nonnegative; summation yields a block-level sensitivity measure rather than a mean per parameter. For a fixed parameterization, the gradient norm measures the largest first-order sensitivity to a unit-norm perturbation of that block. This motivates using its square as an update-priority signal. The calculation uses the gradient of a batch-averaged loss, so the score is a Fisher-inspired proxy rather than exact Fisher information. Its empirical relation to short-term training gains is evaluated in Section~\ref{sec:fm-score-study}.
+ 
+-Both the local examples and $\theta^k$ enter the score. Consequently, clients may assign different priorities to the same target even when their models begin a round from the same global state. Re-evaluation at a later refresh also allows the priorities to change as the global adapter evolves. The single-pass design obtains a score for every candidate at a refresh, including candidates not selected for that client's preceding local update. This avoids restricting the next allocation decision to the client's previously active targets, without requiring trial optimization of the candidate configurations.
++Both the local examples and the current adapter enter the score. Clients can therefore assign different priorities to a common target, and refreshes allow those priorities to evolve with the global model. Each profiling pass evaluates the candidate set, including targets not updated by that client in the preceding round. The next allocation is consequently informed by more than the client's previously active subset. The single-pass design supplies this information without a separate optimization run for every candidate configuration.
+ 
+ \noindent\textbf{Shared positional calibration.}
+-The data-dependent score is supplemented by a structural preference over candidate positions. Prior work on partial LoRA fine-tuning reports that deeper adaptation can provide favorable performance--resource trade-offs in the studied settings~\cite{liu2025legend}. We incorporate this observation through a multiplicative depth factor:
++The raw scores are supplemented by a structural preference over candidate positions. Prior partial-LoRA work reports favorable performance--resource trade-offs for deeper adaptation in its studied settings~\cite{liu2025legend}. We implement a multiplicative factor:
+ \begin{equation}
+  \widetilde g_{i,j}^k=g_{i,j}^k(1+d_j)^{\rho},
+  \label{eq:depth}
+ \end{equation}
+-Here $d_j=(j-1)/(L-1)$ is the normalized position in the ordered candidate set. For the evaluated configurations, $\rho=1+1.5\mathbb I_{\mathrm{pair}}+\eta$, where $\mathbb I_{\mathrm{pair}}$ indicates a sentence-pair task and $\eta=0,1,2$ denotes IID, ordinary non-IID, and severe non-IID settings, respectively. This is the specified calibration schedule; the local dependence remains in $g_{i,j}^{k}$.
++where $d_j=(j-1)/(L-1)$ is the normalized position in the ordered candidate set. The evaluated schedule is $\rho=1+1.5\mathbb I_{\mathrm{pair}}+\eta$, where $\mathbb I_{\mathrm{pair}}$ indicates a sentence-pair task and $\eta=0,1,2$ corresponds to IID, ordinary non-IID, and severe non-IID settings. The schedule is fixed by the configuration, while the client-dependent component remains $g_{i,j}^k$.
+ 
+-The multiplier applies a common positional preference without replacing the client-specific evidence. It can change an individual client's ranking, but does not force clients with different raw scores to share a ranking or select the same matrices. This separates the source of importance information from the structural prior applied to it. The No-Depth comparison in Section~\ref{sec:fm-ablations} is designed to isolate the contribution of this calibration while retaining the local scoring and allocation procedures.
++The common multiplier can change a client's ranking but does not replace its data-dependent evidence or enforce a common mask. It is an auxiliary preference, distinct from the decision to permit individual target selection. The controlled granularity study holds it fixed within every matrix--layer pair. Section~\ref{sec:fm-ablations} separately evaluates the end-to-end effect of removing it.
+ 
+ \noindent\textbf{Configuration utility and refresh.}
+-The server coordinates configurations proposed by different clients. We therefore use a common normalization scale rather than assigning a separate unit scale to each client's largest score:
++Server coordination compares configurations proposed by different clients. The calibrated scores therefore use a common normalization scale:
+ \begin{equation}
+-G_{\max}^k=\max_{\substack{h\in S_k\\1\le j\le L}}\widetilde g_{h,j}^k,\qquad
+- v_{i,j}^k=\frac{\widetilde g_{i,j}^k
+- }{\max\{G_{\max}^k,\delta\}}\in[0,1],
++ G_{\max}^k=\max_{\substack{h\in S_k\\1\le j\le L}}\widetilde g_{h,j}^k,
++ \qquad v_{i,j}^k=
++ \frac{\widetilde g_{i,j}^k}{\max\{G_{\max}^k,\delta\}}\in[0,1],
+  \label{eq:normalization}
+ \end{equation}
+-The positive constant $\delta$ prevents division by zero. Using the same divisor preserves the relative magnitudes of the calibrated scores across both clients and matrices, and sets the utility scale used in the server's utility--latency trade-off. For assignment $\mathbf m_i^k$, the configuration utility is $V_i^k(\mathbf m_i^k)=\sum_{j=1}^{L}m_{i,j}^{k}v_{i,j}^{k}$. Thus, local data determine the raw priorities, the depth factor supplies a structural preference, and the common scale makes those scores directly usable in the shared allocation objective. The sum is a configuration-selection proxy; it does not assume that the full training loss separates into independent matrix losses.
++where $\delta>0$ prevents division by zero. A common divisor retains relative calibrated magnitudes across clients and matrices and sets the utility scale in the server's utility--latency objective. The assignment utility is
++$V_i^k(\mathbf m_i^k)=\sum_{j=1}^{L}m_{i,j}^kv_{i,j}^k$.
++This additive score supplies a tractable selection objective; it does not require the full training loss to decompose into independent matrix losses. Local evidence, the positional preference, and the common scale have separate roles in constructing that objective.
+ 
+-Scores are cached between designated refresh rounds and recomputed when the cache is unavailable or a refresh is due. Reuse avoids repeating the profiling pass at every allocation decision, while a refresh reconnects the score vector to the current adapter. Raw examples and profiling gradients remain local; coordination uses matrix scores and configuration summaries. The profiling sample count and refresh schedule are therefore part of the scoring protocol, rather than additional optimization variables. Section~\ref{sec:fm-score-study} specifies the controlled test of whether configuration scores rank short-term held-out loss reductions, and Section~\ref{sec:fm-ablations} specifies the end-to-end comparisons of scoring source, selection granularity, and calibration.
++Profiles are cached between designated refresh rounds and recomputed when missing or due for refresh. Reuse avoids an additional backward pass at every allocation decision; refreshing reconnects the scores to the current adapter. Raw examples and profiling gradients remain local, while coordination uses matrix scores and configuration summaries. Section~\ref{sec:fm-score-study} evaluates the ranking information supplied by the score, and Section~\ref{sec:fm-ablations} distinguishes scoring-source, granularity, and calibration effects within the complete training pipeline.
+ 
+ \subsection{Resource-Feasible Matrix Allocation}\label{sec:fm-allocation}
+ For a fixed round \(k\), superscripts are omitted from configuration attributes and scheduling variables when unambiguous. Each feasible configuration \(\kappa\) generated by client \(i\) is represented as
+@@ -479,7 +456,7 @@ The bound relates aggregation bias to participation and gradient heterogeneity a
+ 
+ 
+ \section{Experiments}\label{Sec.evaluation}
+-In this section, we evaluate the effectiveness of the proposed \method{} through extensive simulations across diverse datasets and model settings. 
++We evaluate the complete framework on the main benchmark settings and use controlled studies to distinguish selection granularity, scoring reliability, and component effects. Resource-efficiency comparisons use the stated analytical client profiles. 
+ 
+ \subsection{Evaluation Setup}
+ We evaluate image classification on CIFAR100 \cite{krizhevsky2009cifar}, language understanding on MNLI, QNLI, QQP, and SST-2 from GLUE \cite{wang2019glue}, and dialogue summarization on SAMSum \cite{gliwa2019samsum}.
+@@ -595,20 +572,56 @@ SST-2 / IID & HET-style & .930 & +47.8 & +38.5 \\
+ }
+ \end{table}
+ 
++\subsection{Controlled Study of Selection Granularity}
++\label{sec:fm-granularity-study}
++The study in Fig.~\ref{fig:fm-motivation} isolates the trainable-subset decision from the choice of scoring data. We use CIFAR100/ViT-base with 36 Q/K/V candidates, five clients, IID and Dirichlet-$1.0/0.1$ partitions, and seeds 2024--2026. An independent server-proxy pool and a warm-up split are reserved from the training partition before client data are formed. Each client holds out 100 examples for validation. Local profiling uses 16 client-training examples; Proxy averages five disjoint 16-example proxy batches. The two checkpoints are adapter initialization and the result of 100 warm-up steps on the disjoint reserve, not two federated communication rounds.
++
++For each client, checkpoint, and source, the matrix selector maximizes the profiled score over feasible 12-target subsets. The layer selector evaluates all four-block combinations, with Q/K/V tied within each selected block. Both use the same source scores, depth factor, resource limits, and rank eight; the LoRA and jointly trained classifier parameter counts match. All 360 method records are feasible under the adopted resource model. Unselected adapters remain in the forward model but are frozen, and each configuration starts from the same validation loss. The 20-step AdamW runs use learning rate $10^{-3}$, identical data order within each pair, and controlled random states. This protocol measures adaptation from matched starting functions rather than the memory benefit of removing adapters.
++
++The matrix--layer differences are averaged over five clients within each seed, then summarized over three seeds. All 12 setting-level means are positive; 35 of 36 within-seed paired means and 161 of 180 client-level pairs favor matrix-level selection. The full numerical summary appears in Appendix~\ref{app:fm-p2-details}. Because improvements are observed under both scoring sources, the study supports relaxing whole-layer binding without requiring local scores to dominate proxy scores. Depth calibration follows the same partition-specific schedule as the method and is held fixed within each pair.
++
+ \subsection{Scoring Reliability}\label{sec:fm-score-study}
+-We examine whether profiled configuration utility is associated with short-term local improvement. At each selected client and checkpoint, candidate configurations share the same rank, matrix-equivalent budget, and training length and include both score-guided and randomly generated feasible subsets. Each configuration is initialized from the same checkpoint, and improvement is measured as its own pre-training validation loss minus its post-training validation loss on held-out local examples. Spearman correlation is computed separately for each client--checkpoint pair before aggregation. Raw and depth-calibrated scores are evaluated against the same configuration outcomes.
+-\FMtodo{Insert verified A protocol: partition, checkpoint rounds, clients, configurations, steps, validation split, and seeds.}
+-\FMtodo{Insert A correlation table/figure and numeric findings; report the aggregation unit and uncertainty.}
++We next examine whether the additive utility supplies useful ranking information for configurations beyond the selected matrix--layer pair. At each client and checkpoint of the CIFAR100 study, we evaluate the original pool of 12 distinct feasible configurations, including score-guided and random subsets. Every configuration uses 12 rank-8 targets, the same training length, and a matched starting adapter. The outcome is its pre-training minus post-training loss on the held-out local examples. The layer configurations added for the granularity comparison are not appended to this pool.
++
++Spearman correlation is computed separately within each client--checkpoint pool for raw and depth-calibrated scores. We average the five client coefficients within each seed before reporting the three-seed mean and sample standard deviation. The statistics use the paired-random-state outcomes; configuration identities and score values remain unchanged.
++
++\input{generated/fm_a_verified_table.tex}
++
++The six setting-level mean correlations for the calibrated score range from \FMAdepthMin{} to \FMAdepthMax{}; \FMApositive{} of \FMAtotal{} client--checkpoint coefficients are positive. \FMAassociationSentence{} Table~\ref{tab:fm-score-reliability} reports raw and calibrated scores against the same outcomes, separating the informativeness of the gradient signal from the effect of the positional factor. This experiment concerns short-horizon configuration ranking; the following ablation evaluates the designs within full federated training.
++
++\subsection{Ablation of Matrix-Level Adaptation}\label{sec:fm-ablations}
++We isolate three components using SST-2/RoBERTa-base with a Dirichlet-$1.0$ partition. Full is compared with Server-Proxy, which replaces local scores by a shared score computed on a reserved training-only proxy set; Layer-Level, which retains local scoring but ties Q/K/V choices within each block; and No-Depth, which removes only the positional multiplier. All variants use the same private-data and proxy splits within each seed, rank eight, local optimizer settings, candidate-client protocol, resource limits, and 80-round horizon. Their actual selected clients and target subsets remain outcomes of allocation. The three seeds are 2024--2026, and each run consumes a cumulative matrix-equivalent budget of 7,200. This controlled study has its own proxy reservation and is reported separately from the historical main comparison.
++
++\begin{table}[t]
++\centering
++\caption{SST-2 component ablation at a cumulative matrix-equivalent budget of 7,200. Validation Accuracy is reported in percent as mean $\pm$ sample standard deviation over three seeds. Best denotes the peak within each run. Bold marks the largest mean in each metric column.}
++\label{tab:fm-ablations}
++\small
++\setlength{\tabcolsep}{4pt}
++\begin{tabular}{@{}lcc@{}}
++\toprule
++Variant & Final Accuracy & Best Accuracy \\
++\midrule
++Full & $\mathbf{90.60}\pm0.72$ & $90.87\pm0.50$ \\
++Server-Proxy & $90.47\pm0.81$ & $90.80\pm0.87$ \\
++Layer-Level & $90.07\pm1.33$ & $90.73\pm0.42$ \\
++No-Depth & $90.47\pm0.61$ & $\mathbf{90.93}\pm0.42$ \\
++\bottomrule
++\end{tabular}
++\end{table}
+ 
+-\subsection{Ablation of Client-Aware Matrix Selection}\label{sec:fm-ablations}
+-We isolate the scoring source, selection granularity, and depth prior using controlled variants of the same training pipeline. Server-Proxy replaces client-specific scores with scores computed on a separate server-held proxy set. Layer-Level retains local assessment but ties together the candidate matrices within each Transformer block. No-Depth removes only the depth calibration. The full method serves as the reference. All variants share the predefined data splits, candidate-client protocol, optimizer settings, rank, resource limits, and training horizon; the selected participants and matrix subsets may differ as outcomes of the allocation procedure.
+-\FMtodo{Insert verified B metadata and mean/std results for final and best Accuracy, plus actual consumed matrix-equivalent budgets.}
++\begin{figure}[t]
++\centering
++\includegraphics[width=\columnwidth]{figures/fig6_ablation_budget.pdf}
++\caption{Three-seed mean validation Accuracy for all four ablation variants over their complete cumulative-budget trajectories. The endpoint variation and per-run peak metrics are reported in Table~\ref{tab:fm-ablations}. The horizontal axis is matrix-equivalent training cost, not measured runtime.}
++\label{fig:fm-ablation-budget}
++\end{figure}
+ 
+-Relative to Server-Proxy, Layer-Level, and No-Depth, the full method changes final Accuracy by \FMtodo{three signed percentage-point differences}, respectively, with the corresponding run-to-run variation reported in Table~\FMtodo{label}. The actual consumed budgets are \FMtodo{values}. These comparisons separate the effects of scoring source, matrix-level choice, and calibration within the evaluated setting.
++Table~\ref{tab:fm-ablations} reports both final and best Accuracy, and Fig.~\ref{fig:fm-ablation-budget} gives the full budget trajectories. Full attains the highest final mean, exceeding Server-Proxy, Layer-Level, and No-Depth by $0.13$, $0.53$, and $0.13$ percentage points, respectively. The largest final-mean change in this setting occurs when whole-layer binding is imposed, complementing the short-horizon granularity study. The differences are modest relative to run-to-run variation. Local and proxy-based assessment produce close observed means, while No-Depth achieves the slightly higher best mean of $90.93\%$. The ablation thus distinguishes the target-granularity contribution from the smaller endpoint effects of scoring source and calibration, rather than attributing the complete framework's main-benchmark gains to any single component.
+ 
+ \FloatBarrier
+ \section{Conclusion}\label{Sec.conclusion}
+-FedMATRIX-LoRA studies client-aware target-matrix selection for resource-constrained federated fine-tuning. Local profiling connects the current adapter to each client's data, while resource-feasible allocation coordinates the resulting preferences across clients. Matrix-wise aggregation supports the resulting heterogeneous update patterns. The reported experiments demonstrate the performance and resource trade-offs of the complete framework, and the conditional analysis relates its average stationarity to effective-update bias and matrix coverage.
++FedMATRIX-LoRA treats individual LoRA target projections as selectable adaptation units under heterogeneous client resources. Its motivating controlled study shows larger short-term gains from matrix-level selection than from whole-layer binding across the tested setting means, using either local or server-proxy scores. The framework evaluates priorities on local data, constructs feasible configurations, and coordinates their execution under a shared budget before matrix-wise aggregation. A conditional analysis relates the resulting selective updates to effective-update bias and matrix coverage. The main benchmarks and controlled ablations assess complementary aspects of this design: the complete framework's performance and resource trade-offs, and the effects of the scoring and allocation mechanisms. Together, these results motivate importance-guided target selection as a practical dimension of resource-constrained federated adaptation.
+ 
+ \appendices
+ \section{Proofs for Matrix-Wise Aggregation}
+@@ -653,7 +666,17 @@ which is the claimed bound. For the full effective bias, define the remaining lo
+ \end{proof}
+ 
+ 
+-\clearpage
++\section{Complete Controlled-Study Results}
++\label{app:fm-p2-details}
++Table~\ref{tab:fm-p2-complete} lists every partition--checkpoint--source condition from the matched-budget granularity study. Each entry first averages the paired differences across five clients within a seed and then reports their three-seed mean and sample standard deviation. Initialization and the 100-step warm-up checkpoint are distinguished explicitly. These are loss differences, not Accuracy percentage points.
++\input{generated/fm_p2_complete_table.tex}
++
++\section{Scoring-Source Control}
++\label{app:fm-source-control}
++The original scoring-source comparison is summarized separately from the granularity motivation. Local evaluates each client's data; Local-Mean averages the five raw client-score vectors; Proxy averages five disjoint server-proxy batches. Local uses 16 examples per client, and Proxy uses 80 in total. The same calibration, fixed matrix count, training length, and held-out evaluation protocol are used. Table~\ref{tab:fm-source-control} reports paired Local-minus-comparator loss-reduction differences after the same random-state correction used for the scoring study. Positive and negative differences are retained. The main motivation is based on matrix--layer comparisons within each source; this table characterizes the complementary comparison between sources.
++\input{generated/fm_p_corrected_table.tex}
++
++\FloatBarrier
+ \begin{thebibliography}{99}
+ \bibitem{zhang2022opt}
+ S. Zhang \emph{et al.},

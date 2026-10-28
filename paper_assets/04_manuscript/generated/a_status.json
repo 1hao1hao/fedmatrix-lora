@@ -1,0 +1,10 @@
+{
+  "status": "complete",
+  "configuration_records": 1080,
+  "client_checkpoint_cells": 90,
+  "first_records_replaced": 90,
+  "positive_calibrated_cells": 90,
+  "depth_mean_min": 0.656876456876457,
+  "depth_mean_max": 0.8764568764568765,
+  "training_started": false
+}

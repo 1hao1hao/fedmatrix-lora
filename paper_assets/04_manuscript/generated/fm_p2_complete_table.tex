@@ -1,0 +1,18 @@
+\begin{table*}[t]
+\centering
+\caption{Complete matrix-minus-layer differences in 20-step held-out validation-loss reduction. Entries are mean $\pm$ sample standard deviation over three within-seed client means.}
+\label{tab:fm-p2-complete}
+\small
+\begin{tabular}{@{}llcc@{}}
+\toprule
+Partition & Checkpoint & Local scores & Proxy scores \\
+\midrule
+IID & Initial & $+0.00219\pm0.00140$ & $+0.00191\pm0.00125$ \\
+IID & Warm-up & $+0.00669\pm0.00319$ & $+0.00582\pm0.00591$ \\
+Dir. $1.0$ & Initial & $+0.01328\pm0.00211$ & $+0.01335\pm0.00335$ \\
+Dir. $1.0$ & Warm-up & $+0.01411\pm0.00179$ & $+0.01130\pm0.00330$ \\
+Dir. $0.1$ & Initial & $+0.13752\pm0.01708$ & $+0.13907\pm0.01669$ \\
+Dir. $0.1$ & Warm-up & $+0.03412\pm0.00757$ & $+0.02726\pm0.01002$ \\
+\bottomrule
+\end{tabular}
+\end{table*}
