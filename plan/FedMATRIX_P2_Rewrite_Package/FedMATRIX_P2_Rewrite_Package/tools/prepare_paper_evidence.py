@@ -84,10 +84,10 @@ def prep_p2(root: Path, gen: Path) -> tuple[pd.DataFrame, dict]:
         raise ValueError('P2 aggregate counts differ from the locked manuscript text; report rather than rewrite claims')
     summary = pd.read_csv(p / 'paired_summary.csv')
     outrows = []
-    tex = [r'\begin{table*}[t]',r'\centering',
-           r'\caption{Complete matrix-minus-layer differences in 20-step held-out validation-loss reduction. Entries are mean $\pm$ sample standard deviation over three within-seed client means.}',
-           r'\label{tab:fm-p2-complete}',r'\small',r'\begin{tabular}{@{}llcc@{}}',r'\toprule',
-           r'Partition & Checkpoint & Local scores & Proxy scores \\',r'\midrule']
+    tex = [r'\begin{table}[t]',r'\centering',
+           r'\caption{Matrix-level minus layer-level validation-loss reduction using client-local scores. Positive values favor matrix-level selection. Entries are mean $\pm$ sample standard deviation across three seed-level client averages.}',
+           r'\label{tab:fm-p2-complete}',r'\small',r'\begin{tabular}{@{}llc@{}}',r'\toprule',
+           r'Partition & Checkpoint & Local gain \\',r'\midrule']
     for dist in DISTS:
         for stage in STAGES:
             stats = []
@@ -99,8 +99,8 @@ def prep_p2(root: Path, gen: Path) -> tuple[pd.DataFrame, dict]:
                     raise ValueError('P2 published summary does not reproduce from all_results')
                 stats.append(texnum(mu,sd,5,True))
                 outrows.append({'distribution':dist,'checkpoint':stage,'source':source,'mean':mu,'std':sd})
-            tex.append(f'{LABELS[dist]} & {STAGE_LABELS[stage]} & {stats[0]} & {stats[1]} '+r'\\')
-    tex += [r'\bottomrule',r'\end{tabular}',r'\end{table*}']
+            tex.append(f'{LABELS[dist]} & {STAGE_LABELS[stage]} & {stats[0]} '+r'\\')
+    tex += [r'\bottomrule',r'\end{tabular}',r'\end{table}']
     write(gen/'fm_p2_complete_table.tex','\n'.join(tex)+'\n')
     pairs.to_csv(gen/'p2_verified_client_pairs.csv',index=False)
     seedmeans.to_csv(gen/'p2_verified_seed_pairs.csv',index=False)
@@ -264,9 +264,9 @@ def prep_a(root: Path, gen: Path, bymask: dict) -> None:
             r'\newcommand{\FMAtotal}{90}'+'\n'+
             r'\newcommand{\FMAassociationSentence}{'+interpretation+r'}'+'\n')
     table=[r'\begin{table}[t]',r'\centering',
-           r"\caption{Agreement between predicted configuration utility and observed 20-step validation-loss reduction, measured by Spearman's $r_s$. Raw uses gradient-squared matrix scores; Calibrated additionally applies the positional factor. Entries are three-seed mean $\pm$ sample standard deviation of client-averaged coefficients.}",
+           r"\caption{Spearman rank correlation ($r_s$) between score-predicted configuration rankings and observed 20-step validation-loss-reduction rankings. Raw uses gradient-squared scores; Calibrated adds positional weighting. Entries are three-seed mean $\pm$ sample standard deviation after client averaging.}",
            r'\label{tab:fm-score-reliability}',r'\small',r'\setlength{\tabcolsep}{3pt}',
-           r'\begin{tabular}{@{}llcc@{}}',r'\toprule',r'Partition & State & Raw & Calibrated \\',r'\midrule',
+           r'\begin{tabular}{@{}llcc@{}}',r'\toprule',r'Partition & State & Raw ($r_s$) & Calibrated ($r_s$) \\',r'\midrule',
            *rows,r'\bottomrule',r'\end{tabular}',r'\end{table}']
     write(gen/'fm_a_verified_table.tex',macros+'\n'.join(table)+'\n')
     ptable=[r'\begin{table*}[t]',r'\centering',

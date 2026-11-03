@@ -575,13 +575,13 @@ We evaluate the effect of selection granularity on CIFAR100/ViT-base using 36 Q/
 We report the difference between the validation-loss reductions achieved by matrix-level and layer-level allocation, averaged over five clients within each seed. As shown in Fig.~\ref{fig:fm-motivation}, matrix-level selection achieves positive mean gains in all six settings and positive seed-level paired gains in all 18 comparisons. This evidence supports treating target projections as independently selectable adaptation units under a fixed budget.
 
 \subsection{Scoring Reliability}\label{sec:fm-score-study}
-An importance score is useful for configuration selection only if it can distinguish configurations that deliver different adaptation gains. We evaluate 12 feasible, equal-budget matrix configurations for each client at each checkpoint. Before training, every configuration receives two predicted utilities: the sum of its selected matrices' raw gradient scores and the corresponding sum after depth calibration. We then train each configuration for 20 steps from a matched model state and measure its reduction in held-out validation loss. This directly compares predicted configuration utility with observed short-term adaptation gain.
+We evaluate whether matrix importance scores can predict which training configurations will yield larger adaptation gains. For each client and checkpoint, we construct 12 configurations with the same parameter budget. Before training, each configuration is ranked using either the sum of its raw gradient-squared matrix scores or the sum of its depth-calibrated scores. We then train each configuration for 20 steps from a matched model state and rank the configurations by their actual reduction in held-out validation loss.
 
-We quantify the agreement using Spearman's rank correlation coefficient, denoted by $r_s$. A larger positive coefficient means that configurations assigned higher importance scores also tend to achieve larger actual loss reductions. Correlation is computed separately for each client's 12 configurations; we then average across clients within a seed and report the mean and sample standard deviation across three seeds.
+We measure the agreement between predicted and observed rankings using Spearman's rank correlation coefficient $r_s$. A value of $1$ indicates identical rankings, whereas a value near $0$ indicates little rank association. We compute $r_s$ separately for each client's 12 configurations, average the coefficients across clients within each seed, and report the mean and sample standard deviation across three seeds.
 
 \input{generated/fm_a_verified_table.tex}
 
-Table~\ref{tab:fm-score-reliability} shows positive ranking correlations for both scoring variants across all six settings. The depth-calibrated scores achieve mean correlations between 0.657 and 0.876, with positive coefficients in all 90 evaluated client--checkpoint cases. Depth calibration improves the setting-level mean in five of the six comparisons, while the raw score performs better for the Dirichlet-$0.1$ initialization setting. Overall, the results establish that gradient-based matrix importance provides useful information for ordering candidate configurations, with positional calibration offering a complementary adjustment.
+Table~\ref{tab:fm-score-reliability} shows that both scoring variants are positively correlated with actual adaptation gains across all six settings. Depth-calibrated scores achieve mean correlations of $0.657$--$0.876$ and improve upon raw scores in five of the six settings. Raw scores perform better in the Dirichlet-$0.1$ initialization setting. These results support using gradient-based matrix importance to guide configuration selection, while positional calibration provides an additional, setting-dependent adjustment.
 
 \subsection{Ablation of Matrix-Level Adaptation}\label{sec:fm-ablations}
 We isolate three components using SST-2/RoBERTa-base with a Dirichlet-$1.0$ partition. Full is compared with Server-Proxy, which replaces local scores by a shared score computed on a reserved training-only proxy set; Layer-Level, which retains local scoring but ties Q/K/V choices within each block; and No-Depth, which removes only the positional multiplier. All variants use the same private-data and proxy splits within each seed, rank eight, local optimizer settings, candidate-client protocol, resource limits, and 80-round horizon. Their actual selected clients and target subsets remain outcomes of allocation. The three seeds are 2024--2026, and each run consumes a cumulative matrix-equivalent budget of 7,200. This controlled study has its own proxy reservation and is reported separately from the historical main comparison.
@@ -653,15 +653,10 @@ which is the claimed bound. For the full effective bias, define the remaining lo
 \end{proof}
 
 
-\section{Complete Controlled-Study Results}
+\section{Complete Local-Score Granularity Results}
 \label{app:fm-p2-details}
-Table~\ref{tab:fm-p2-complete} lists every partition--checkpoint--source condition from the matched-budget granularity study. Each entry first averages the paired differences across five clients within a seed and then reports their three-seed mean and sample standard deviation. Initialization and the 100-step warm-up checkpoint are distinguished explicitly. These are loss differences, not Accuracy percentage points.
+Table~\ref{tab:fm-p2-complete} provides the complete numerical results underlying Fig.~\ref{fig:fm-motivation}. Each entry reports the additional held-out validation-loss reduction from matrix-level selection over whole-layer allocation using identical client-local scores. The differences are averaged across five clients within each seed and summarized as mean $\pm$ sample standard deviation over three seeds. All six setting-level mean differences are positive.
 \input{generated/fm_p2_complete_table.tex}
-
-\section{Scoring-Source Control}
-\label{app:fm-source-control}
-The original scoring-source comparison is summarized separately from the granularity motivation. Local evaluates each client's data; Local-Mean averages the five raw client-score vectors; Proxy averages five disjoint server-proxy batches. Local uses 16 examples per client, and Proxy uses 80 in total. The same calibration, fixed matrix count, training length, and held-out evaluation protocol are used. Table~\ref{tab:fm-source-control} reports paired Local-minus-comparator loss-reduction differences after the same random-state correction used for the scoring study. Positive and negative differences are retained. The main motivation is based on matrix--layer comparisons within each source; this table characterizes the complementary comparison between sources.
-\input{generated/fm_p_corrected_table.tex}
 
 \FloatBarrier
 \begin{thebibliography}{99}
